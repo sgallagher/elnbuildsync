@@ -85,10 +85,20 @@ class DBTagMessage(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
 
     # The name of the component that was tagged
-    component: Mapped[str] = mapped_column(nullable=False)
+    component: Mapped[str] = mapped_column(nullable=False, unique=False)
 
     # The ID of the build that was tagged
-    build_id: Mapped[int] = mapped_column(nullable=False)
+    build_id: Mapped[int] = mapped_column(nullable=False, unique=False)
+
+    # The timestamp when the message was created
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now
+    )
+
+    # The timestamp when the message was completed
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # The RebuildBatch this message is associated with
     batch_id: Mapped[Optional[int]] = mapped_column(

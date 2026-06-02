@@ -21,7 +21,6 @@ import re
 import rpm
 
 from datetime import datetime
-from queue import Queue, Empty
 
 from fedora_messaging.message import Message as FedoraMessage
 
@@ -33,7 +32,6 @@ from .tagmessage import TagMessage
 from .rebuildbatch import RebuildBatch
 
 
-message_queue = Queue()
 message_batch_processor = None
 
 running = False
@@ -50,17 +48,9 @@ class ComponentNotFoundError(Exception):
 
 async def process_message_batch():
     global running
-    tag_messages = list()
     try:
-        while True:
-            try:
-                fedora_tag_message = message_queue.get_nowait()
-
-                tag_message = await TagMessage(fedora_tag_message).async_init()
-
-                tag_messages.append(tag_message)
-            except Empty:
-                break
+        # Get all the unprocessed tag messages from the database
+        tag_messages = await TagMessage.get_unprocessed_messages()
 
         if not tag_messages:
             # Nothing to do here
@@ -86,6 +76,15 @@ async def process_message_batch():
             # to the next batch.
             logger.exception(e)
         finally:
+            # Mark all the tag messages as completed
+            for tag_message in tag_messages:
+                try:
+                    await tag_message.mark_completed()
+                except Exception:
+                    logger.exception(
+                        f"Could not mark tag message {tag_message.id} as completed"
+                    )
+
             running = False
     except Exception as e:
         # We need to catch all exceptions here. If we allow them to bubble up,
@@ -193,7 +192,7 @@ async def rebuild_from_components(downstream_components):
                 logger.info(f"Rebuilding {buildinfo['nvr']} for ELN.")
 
                 message_batch_processor.reset()
-                message_queue.put(msg)
+                await TagMessage(msg.body["name"], msg.body["build_id"]).async_init()
 
             except ComponentNotFoundError as e:
                 logger.exception(e)

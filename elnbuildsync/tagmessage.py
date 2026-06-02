@@ -17,9 +17,10 @@
 # SPDX-License-Identifier: 	GPL-3.0-or-later
 
 
+from datetime import datetime, timezone
 import logging
 
-from fedora_messaging.message import Message as FedoraMessage
+from sqlalchemy.sql.expression import select
 
 from elnbuildsync import db_models
 from .decorators import as_deferred
@@ -29,22 +30,28 @@ logger = logging.getLogger(__name__)
 
 
 class TagMessage:
+    # Most often this will be initialized from a message received from the AMQP queue.
     # Tag JSON samples:
     # https://apps.fedoraproject.org/datagrepper/v2/search?topic=org.fedoraproject.prod.buildsys.tag
 
-    def __init__(self, tag_message: FedoraMessage) -> None:
+    def __init__(self, component: str, build_id: int) -> None:
         """
         Do not call TagMessage() alone. Instantiate via
-        `await TagMessage(msg).async_init()` instead. This ensures
-        that the database entry is created before the object is used.
+        `await TagMessage(component, build_id).async_init()` instead. This
+        ensures that the database entry is created before the object is used.
+        :param component: The name of the component that was tagged
+        :param build_id: The ID of the build that was tagged
         """
-        self.component = tag_message.body["name"]
-        self.build_id = tag_message.body["build_id"]
+        self.component = component
+        self.build_id = build_id
         self.scmurl = None
-        self._message = tag_message
 
         # Database object
         self._db_obj = None
+
+    @property
+    def id(self):
+        return self._db_obj.id
 
     @as_deferred
     async def async_init(self):
@@ -88,3 +95,38 @@ class TagMessage:
             raise ValueError(f"SCM URL for {self.build_id} is not available")
 
         return self.scmurl
+
+    @staticmethod
+    @as_deferred
+    async def get_unprocessed_messages():
+        async with db_models.async_session() as session:
+            db_tag_messages = await session.execute(
+                select(db_models.DBTagMessage)
+                .where(db_models.DBTagMessage.completed_at.is_(None))
+                .order_by(db_models.DBTagMessage.created_at.asc())
+            )
+
+            tag_messages = dict[str, TagMessage]()
+            for db_tag_message in db_tag_messages.scalars().all():
+                # If this component already has a tag message, drop the older one.
+                # We only want to rebuild the most recent build for each component.
+                # (OR do we want to build both, but in different slices?)
+                if db_tag_message.component in tag_messages:
+                    await tag_messages[db_tag_message.component].drop()
+                    del tag_messages[db_tag_message.component]
+
+                tag_message = TagMessage(
+                    component=db_tag_message.component,
+                    build_id=db_tag_message.build_id,
+                )
+                tag_message._db_obj = db_tag_message
+                tag_messages[db_tag_message.component] = tag_message
+
+            return list(tag_messages.values())
+
+    @as_deferred
+    async def mark_completed(self):
+        async with db_models.async_session() as session:
+            self._db_obj.completed_at = datetime.now(timezone.utc)
+            session.add(self._db_obj)
+            await session.commit()
