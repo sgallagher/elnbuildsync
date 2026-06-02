@@ -86,7 +86,7 @@ class RebuildBatch:
             await self.add_tag_message(tag_message)
 
             if not config.skip_tag(tag_message.component):
-                build_ids.append(tag_message.get_build_id())
+                build_ids.append(tag_message.build_id)
 
         (
             self._side_tag_base,

@@ -87,11 +87,8 @@ class DBTagMessage(Base):
     # The name of the component that was tagged
     component: Mapped[str] = mapped_column(nullable=False)
 
-    # The SCM URL used to build the tagged component
-    scmurl: Mapped[str] = mapped_column(nullable=False)
-
-    # The raw body of the message (for logging)
-    raw: Mapped[str] = mapped_column(nullable=False)
+    # The ID of the build that was tagged
+    build_id: Mapped[int] = mapped_column(nullable=False)
 
     # The RebuildBatch this message is associated with
     batch_id: Mapped[Optional[int]] = mapped_column(

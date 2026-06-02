@@ -33,25 +33,6 @@ logger = logging.getLogger(__name__)
 KOJI_BACKGROUND_PRIORITY = 5
 
 
-async def get_scmurl(build_id):
-    """Get the SCMURL that the build was created from
-
-    :param build_id: The ID of the build (likely retrieved from a tagging message)
-    :returns: A string containing the full, dereferenced SCMURL for the build
-    """
-
-    logger.debug(f"Retrieving SCM URL for {build_id}")
-    try:
-        buildinfo = await get_buildinfo(build_id)
-    except Exception:
-        logger.exception("Unexpected error retrieving SCM URL")
-        raise
-    logger.debug(f"Buildinfo: {buildinfo}")
-
-    logger.debug(f"Retrieved SCM URL: {buildinfo['source']}")
-    return buildinfo["source"]
-
-
 async def get_buildinfo(build_id, **kwargs):
     """
     Get all information about a particular build
