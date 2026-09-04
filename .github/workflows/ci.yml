@@ -113,7 +113,7 @@ jobs:
           dnf -y clean all --enablerepo='*'
           pip install -e ".[test]"
       - name: Run pytest
-        run: pytest tests
+        run: pytest tests -m "not integration"
 
   project_version:
     runs-on: ubuntu-latest

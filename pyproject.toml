@@ -35,6 +35,9 @@ test = ["pytest>=7", "pytest-asyncio>=0.21"]
 asyncio_default_fixture_loop_scope = "function"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: end-to-end tests that fake Koji/Bodhi/Fedora Messaging and require a real Postgres database (see tests/integration/).",
+]
 
 [build-system]
 requires = ["setuptools >= 40.6.0", "wheel"]
