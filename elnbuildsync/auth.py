@@ -48,6 +48,8 @@ from urllib.parse import urlencode
 
 import httpx
 from sqlalchemy import delete, select
+from starlette.requests import Request
+from starlette.responses import Response
 
 from . import config, db_models
 
@@ -331,23 +333,20 @@ async def cleanup_expired_sessions() -> int:
     return count
 
 
-def get_session_cookie(request) -> str | None:
+def get_session_cookie(request: Request) -> str | None:
     """
     Extract the session ID from the request cookies.
 
     Args:
-        request: Twisted web request object
+        request: Starlette/FastAPI request object
 
     Returns:
         Session ID string or None if not present
     """
-    cookie = request.getCookie(SESSION_COOKIE_NAME.encode())
-    if cookie:
-        return cookie.decode("utf-8")
-    return None
+    return request.cookies.get(SESSION_COOKIE_NAME)
 
 
-def get_bearer_token(request) -> str | None:
+def get_bearer_token(request: Request) -> str | None:
     """
     Extract the Bearer token from the Authorization header.
 
@@ -355,56 +354,45 @@ def get_bearer_token(request) -> str | None:
     for API usage (e.g. curl).
 
     Args:
-        request: Twisted web request object
+        request: Starlette/FastAPI request object
 
     Returns:
         The token string or None if no Bearer authorization is present
     """
-    authz = request.getHeader("Authorization")
+    authz = request.headers.get("Authorization")
     if not authz:
         return None
-    if isinstance(authz, bytes):
-        authz = authz.decode("utf-8")
     prefix = "Bearer "
     if authz.startswith(prefix):
         return authz[len(prefix) :].strip()  # noqa: E203
     return None
 
 
-def set_session_cookie(request, session_id: str, secure: bool = True):
+def set_session_cookie(response: Response, session_id: str, secure: bool = True):
     """
     Set the session cookie on the response.
 
     Args:
-        request: Twisted web request object
+        response: Starlette/FastAPI response object
         session_id: The session ID to set
         secure: Whether to set the Secure flag (should be True in production)
     """
-    # Calculate max age in seconds
-    max_age = SESSION_DURATION_HOURS * 60 * 60
-
-    # Build cookie with security attributes
-    cookie_parts = [
-        f"{SESSION_COOKIE_NAME}={session_id}",
-        f"Max-Age={max_age}",
-        "Path=/",
-        "HttpOnly",
-        "SameSite=Lax",
-    ]
-
-    if secure:
-        cookie_parts.append("Secure")
-
-    cookie_value = "; ".join(cookie_parts)
-    request.setHeader(b"Set-Cookie", cookie_value.encode())
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_id,
+        max_age=SESSION_DURATION_HOURS * 60 * 60,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+    )
 
 
-def clear_session_cookie(request):
+def clear_session_cookie(response: Response):
     """
     Clear the session cookie (for logout).
 
     Args:
-        request: Twisted web request object
+        response: Starlette/FastAPI response object
     """
-    cookie_value = f"{SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly"
-    request.setHeader(b"Set-Cookie", cookie_value.encode())
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
