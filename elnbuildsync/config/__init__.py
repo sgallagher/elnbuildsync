@@ -34,7 +34,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DISTRO_VIEWS = ["eln"]
 
-# A special Deferred for terminating the program
+# A special asyncio.Future for terminating the program. It is never
+# actually fired (there is no supported way to trigger a graceful
+# shutdown yet); daemon.py awaits it purely to keep _main()'s task alive
+# until the process is killed by a signal, which stops the Twisted
+# reactor out from under it. Must be a real asyncio.Future (not a
+# Twisted Deferred).
 terminator = None
 
 # The URL for connecting to the database

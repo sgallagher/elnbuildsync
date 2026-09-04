@@ -233,7 +233,7 @@ async def _main(
     krb5_keytab_principal=None,
 ) -> None:
     auth.openid_ca_file = openid_ca_file
-    config.terminator = Deferred()
+    config.terminator = asyncio.Future()
     with tempfile.TemporaryDirectory(prefix="elnbuildsync-") as cdir:
         config.tmpdir = cdir
 
