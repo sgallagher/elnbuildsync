@@ -356,14 +356,6 @@ def _invoke_koji_sync(method, args, kwargs):
 _RETRYABLE_4XX = frozenset((408, 429))
 
 
-async def _reactor_sleep(seconds: float) -> None:
-    """Sleep via the Twisted reactor (safe under asyncioreactor + tenacity)."""
-    from twisted.internet import reactor
-    from twisted.internet.task import deferLater
-
-    await deferLater(reactor, seconds)
-
-
 def _should_retry_koji_exception(exc: BaseException) -> bool:
     """Retry only genuinely transient failures within a single 60s budget.
 
@@ -410,7 +402,6 @@ async def _call_koji_once(method, *args, **kwargs):
     wait=wait_exponential(),
     stop=stop_after_delay(60),
     retry=retry_if_exception(_should_retry_koji_exception),
-    sleep=_reactor_sleep,
     reraise=True,
 )
 async def call_koji(method, *args, **kwargs):
