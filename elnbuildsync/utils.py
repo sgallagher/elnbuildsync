@@ -16,16 +16,17 @@
 
 # SPDX-License-Identifier: 	GPL-3.0-or-later
 
+import asyncio
+
 import yaml
-from twisted.internet.threads import deferToThread
 
 
 def _load_yaml_file(path):
-    """Read and parse a YAML file (blocking; run via deferToThread)."""
+    """Read and parse a YAML file (blocking; run via asyncio.to_thread)."""
     with open(path) as f:
         return yaml.safe_load(f)
 
 
 async def load_yaml_file(path):
-    """Read and parse a YAML file without blocking the reactor."""
-    return await deferToThread(_load_yaml_file, path)
+    """Read and parse a YAML file without blocking the event loop."""
+    return await asyncio.to_thread(_load_yaml_file, path)

@@ -17,13 +17,13 @@
 # SPDX-License-Identifier: 	GPL-3.0-or-later
 
 
+import asyncio
 import logging
 import os
 import tempfile
 
 import git
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
-from twisted.internet.threads import deferToThread
 
 from ..utils import load_yaml_file
 
@@ -253,8 +253,8 @@ async def _clone_and_load_dynamic_config(scm_link, scm_ref, ConfigError):
     poison a later attempt (git refuses non-empty destinations).
     """
     with tempfile.TemporaryDirectory(prefix=TEMP_DIR_PREFIX) as cdir:
-        repo = await deferToThread(git.Repo.clone_from, scm_link, cdir)
-        await deferToThread(repo.git.checkout, scm_ref)
+        repo = await asyncio.to_thread(git.Repo.clone_from, scm_link, cdir)
+        await asyncio.to_thread(repo.git.checkout, scm_ref)
         logger.info("Configuration fetched successfully.")
 
         config_path = os.path.join(cdir, DYNAMIC_CONFIG_FILENAME)

@@ -28,7 +28,6 @@ from urllib.parse import quote, urlparse
 
 from twisted.internet import reactor
 from twisted.internet.defer import Deferred
-from twisted.internet.threads import deferToThread
 from twisted.web.error import Error as WebError
 from twisted.web.resource import Resource
 from twisted.web.server import NOT_DONE_YET, Site
@@ -78,7 +77,7 @@ async def load_status_page() -> None:
     """Read status.html and cache the version-substituted result for the process lifetime."""
     global status_page_html
     template_path = os.path.join(os.path.dirname(__file__), "templates", "status.html")
-    raw = await deferToThread(_read_status_template, template_path)
+    raw = await asyncio.to_thread(_read_status_template, template_path)
     content = Template(raw).substitute(version=_elnbuildsync_version())
     status_page_html = content.encode("utf-8")
     logger.debug("Status page template loaded from %s", template_path)

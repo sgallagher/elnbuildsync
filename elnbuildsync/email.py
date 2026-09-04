@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import smtplib
 import socket
@@ -26,14 +27,12 @@ from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from twisted.internet.threads import deferToThread
-
 logger = logging.getLogger(__name__)
 
 
 class Email:
-    """SMTP client using ``smtplib`` in a thread (via Twisted), with settings from
-    ``config.main['email']`` and a password."""
+    """SMTP client using ``smtplib`` in a thread (via ``asyncio.to_thread``), with
+    settings from ``config.main['email']`` and a password."""
 
     def __init__(self, email_config: dict, password: str) -> None:
         self._config = email_config
@@ -70,7 +69,7 @@ class Email:
                 )
                 msg.attach(part)
 
-            await deferToThread(
+            await asyncio.to_thread(
                 self._send_smtp_sync,
                 msg,
             )

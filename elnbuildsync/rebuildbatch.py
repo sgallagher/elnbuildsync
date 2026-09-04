@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections import defaultdict
@@ -29,7 +30,6 @@ from urllib.parse import urlparse
 
 from bodhi.client.bindings import BodhiClient, BodhiClientException
 from tenacity import retry, stop_after_delay, wait_exponential
-from twisted.internet.threads import deferToThread
 
 from . import config, db_models, kojihelpers
 from .buildtrigger import BuildTrigger
@@ -334,7 +334,7 @@ class RebuildBatch:
 
             logger.info(f"Submitting Bodhi update for {update_tag.name}")
             try:
-                await deferToThread(self._submit_bodhi_update, update_tag)
+                await asyncio.to_thread(self._submit_bodhi_update, update_tag)
             except Exception:
                 logger.exception(f"Failed to submit Bodhi update for {update_tag.name}")
                 raise

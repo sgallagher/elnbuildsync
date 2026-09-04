@@ -16,6 +16,7 @@
 
 # SPDX-License-Identifier: 	GPL-3.0-or-later
 
+import asyncio
 import logging
 import os
 import threading
@@ -32,7 +33,6 @@ from tenacity import (
     stop_after_delay,
     wait_exponential,
 )
-from twisted.internet.threads import deferToThread
 
 from .. import config
 from .errors import BuildSysUnavailable, KerberosAuthError, KojiLoginError
@@ -319,7 +319,7 @@ async def _ensure_tgt():
     remaining = _cached_tgt_remaining()
     if remaining is not None and remaining >= TGT_RENEW_THRESHOLD_SECONDS:
         return
-    await deferToThread(_ensure_tgt_sync)
+    await asyncio.to_thread(_ensure_tgt_sync)
 
 
 def _ensure_bsys_sync():
@@ -403,7 +403,7 @@ def get_koji_url():
 async def _call_koji_once(method, *args, **kwargs):
     """Single attempt: ensure TGT, then invoke in a worker thread."""
     await _ensure_tgt()
-    return await deferToThread(_invoke_koji_sync, method, args, kwargs)
+    return await asyncio.to_thread(_invoke_koji_sync, method, args, kwargs)
 
 
 @retry(
