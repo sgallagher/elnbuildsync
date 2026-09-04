@@ -16,10 +16,14 @@
 
 # SPDX-License-Identifier: 	GPL-3.0-or-later
 
-# Install the asyncio reactor before any submodule imports Twisted's default
-# reactor (e.g. listener, web). Entry point is elnbuildsync:main, so this always
-# runs first. Install when none exists; ignore an already-installed
-# AsyncioSelectorReactor; fail for any other reactor type.
+# Install the asyncio reactor before daemon.py's task.react() call installs
+# Twisted's default reactor. This is required so fedora_messaging's AMQP
+# transport (built on pika's Twisted adapter, via
+# fedora_messaging.api.twisted_consume()) shares the same event loop as the
+# rest of the process, which runs on plain asyncio. Entry point is
+# elnbuildsync:main, so this always runs first. Install when none exists;
+# ignore an already-installed AsyncioSelectorReactor; fail for any other
+# reactor type.
 import asyncio
 
 from twisted.internet import asyncioreactor
