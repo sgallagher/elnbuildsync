@@ -12,5 +12,4 @@ rpm
 sqlalchemy >= 2
 tenacity >= 8
 twisted >= 22
-txrequests
 httpx

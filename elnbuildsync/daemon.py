@@ -286,9 +286,7 @@ async def _main(
         updater.start(config.config_timer, now=False)
 
         # Schedule batch checking
-        batching.message_batch_processor = PeriodicTask(
-            batching.process_message_batch
-        )
+        batching.message_batch_processor = PeriodicTask(batching.process_message_batch)
         batching.message_batch_processor.start(config.message_batch_timer, now=False)
 
         # Schedule periodic status page and run it once at startup

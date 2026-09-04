@@ -1397,9 +1397,7 @@ class TestGetRawhideTag:
     @pytest.mark.asyncio
     async def test_raises_on_http_error(self):
         mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock(
-            side_effect=httpx.HTTPError("404")
-        )
+        mock_response.raise_for_status = MagicMock(side_effect=httpx.HTTPError("404"))
 
         mock_get = AsyncMock(return_value=mock_response)
         mock_client = _mock_httpx_client(mock_get)
@@ -1467,9 +1465,7 @@ class TestGetDistroPackages:
     @pytest.mark.asyncio
     async def test_raises_on_http_error(self):
         mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock(
-            side_effect=httpx.HTTPError("404")
-        )
+        mock_response.raise_for_status = MagicMock(side_effect=httpx.HTTPError("404"))
 
         mock_get = AsyncMock(return_value=mock_response)
         mock_client = _mock_httpx_client(mock_get)
