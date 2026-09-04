@@ -328,6 +328,32 @@ pip install "${SCRIPT_DIR}"
 
 export FEDORA_MESSAGING_CONF=/etc/fedora-messaging/config.toml
 
+# Container runtimes (podman/docker/Kubernetes) send SIGTERM to PID 1 to ask
+# a container to stop. This script is PID 1 (the ENTRYPOINT), so without
+# this, an un-trapped SIGTERM sent to the container would just terminate
+# bash immediately, leaving elnbuildsync running as an orphan until the
+# runtime gives up waiting and SIGKILLs the whole cgroup -- Twisted's
+# reactor never gets a chance to shut down cleanly. Forward it (and SIGINT,
+# for interactive `podman run`/Ctrl-C) to the real daemon instead.
+#
+# exec'ing into elnbuildsync instead of backgrounding it would be simpler,
+# but would also skip the Kerberos ccache cleanup EXIT trap set up above.
+#
+# Installed *before* elnbuildsync is backgrounded below, so a signal that
+# arrives before _elnbuildsync_pid is even assigned can't fall through to
+# bash's default (immediate, unforwarded) termination; _forward_signal
+# guards the kill call for exactly that case, since there's nothing to
+# forward the signal to yet.
+_term_received=0
+_elnbuildsync_pid=""
+_forward_signal() {
+  _term_received=1
+  if [ -n "${_elnbuildsync_pid}" ]; then
+    kill -TERM "${_elnbuildsync_pid}" 2>/dev/null || true
+  fi
+}
+trap _forward_signal TERM INT
+
 elnbuildsync \
   "${STATIC_ARGS[@]}" \
   "${DYNAMIC_ARGS[@]}" \
@@ -337,6 +363,22 @@ elnbuildsync \
   "${OIDC_ARGS[@]}" \
   "${OPENID_CA_ARG[@]}" \
   "${KRB5_ARGS[@]}" \
-  "${_arg_custom[@]}"
+  "${_arg_custom[@]}" &
+_elnbuildsync_pid=$!
+
+set +e
+wait "${_elnbuildsync_pid}"
+_elnbuildsync_rc=$?
+if [ "${_term_received}" -eq 1 ]; then
+  # A trapped signal interrupts `wait` as soon as the trap runs, before the
+  # child has actually exited (and with the wrong exit status). Wait on it
+  # again now that the signal has been forwarded, to block until it has
+  # genuinely terminated and pick up its real exit status.
+  wait "${_elnbuildsync_pid}"
+  _elnbuildsync_rc=$?
+fi
+set -e
+
+exit "${_elnbuildsync_rc}"
 
 # ] <-- needed because of Argbash
