@@ -17,15 +17,11 @@
 # SPDX-License-Identifier: 	GPL-3.0-or-later
 
 
+import asyncio
 import logging
-import threading
 
 import koji
 from fedora_messaging.exceptions import Drop, Nack
-from twisted.internet import reactor
-from twisted.internet.defer import AlreadyCalledError, CancelledError, Deferred
-from twisted.internet.defer import TimeoutError as DeferredTimeoutError
-from twisted.internet.threads import blockingCallFromThread
 
 from elnbuildsync.kojihelpers.connection import call_koji
 
@@ -36,22 +32,22 @@ from .state import ELNBuildSyncState as state
 logger = logging.getLogger(__name__)
 
 task_check_processor = None
-
-# Serializes ownership transitions of state.active_tasks across the
-# fedora-messaging callback thread, reactor polling, and timeout errbacks.
-_active_tasks_lock = threading.Lock()
+tag_check_processor = None
 
 
 def _claim_active_task(task_id):
-    """Atomically remove and return the Deferred for ``task_id``, or None."""
-    with _active_tasks_lock:
-        return state.active_tasks.pop(task_id, None)
+    """Remove and return the Future for ``task_id``, or None.
+
+    This dict access is synchronous (no ``await`` inside it), so it can't be
+    interleaved with any other coroutine running on the event loop; no
+    locking is required.
+    """
+    return state.active_tasks.pop(task_id, None)
 
 
-def _reinsert_active_task(task_id, deferred):
-    """Put a previously claimed Deferred back into ``active_tasks``."""
-    with _active_tasks_lock:
-        state.active_tasks[task_id] = deferred
+def _reinsert_active_task(task_id, future):
+    """Put a previously claimed Future back into ``active_tasks``."""
+    state.active_tasks[task_id] = future
 
 
 def _handle_repo_init(msg):
@@ -60,10 +56,8 @@ def _handle_repo_init(msg):
 
     if tag in kojihelpers.awaiting_repo_init:
         logger.info(f"repo {tag} has started regenerating")
-        for deferred in kojihelpers.awaiting_repo_init[tag]:
-            # Schedule on the reactor thread without blocking the
-            # fedora-messaging callback thread.
-            reactor.callFromThread(fire_task_callback, deferred, tag)
+        for future in kojihelpers.awaiting_repo_init[tag]:
+            fire_task_callback(future, tag)
 
         # Remove it from the awaited list
         del kojihelpers.awaiting_repo_init[tag]
@@ -80,10 +74,8 @@ def _handle_repo_done(msg):
 
     if tag in kojihelpers.awaited_repos:
         logger.info(f"Repo {tag} has regenerated")
-        for deferred in kojihelpers.awaited_repos[tag]:
-            # Schedule on the reactor thread without blocking the
-            # fedora-messaging callback thread.
-            reactor.callFromThread(fire_task_callback, deferred, tag)
+        for future in kojihelpers.awaited_repos[tag]:
+            fire_task_callback(future, tag)
 
         # Remove it from the awaited list
         del kojihelpers.awaited_repos[tag]
@@ -99,8 +91,7 @@ def _handle_task_state_change(msg):
     task_id = msg.body["id"]
 
     if msg.body["new"] in ("FREE", "OPEN", "ASSIGNED"):
-        with _active_tasks_lock:
-            tracked = task_id in state.active_tasks
+        tracked = task_id in state.active_tasks
         if tracked:
             logger.debug(
                 f"Task {task_id} ({msg.body['info']['request']}) is {msg.body['new']}"
@@ -109,9 +100,9 @@ def _handle_task_state_change(msg):
         logger.debug(f"Unknown task_id {task_id}. Ignoring.")
         raise Drop()
 
-    # Claim ownership before dispatching so polling/timeout cannot also fire.
-    deferred = _claim_active_task(task_id)
-    if deferred is None:
+    # Claim ownership before dispatching so check_tasks()/timeouts cannot also fire.
+    future = _claim_active_task(task_id)
+    if future is None:
         # Ignore messages from unrelated builds
         logger.debug(f"Unknown task_id {task_id}. Ignoring.")
         raise Drop()
@@ -121,19 +112,19 @@ def _handle_task_state_change(msg):
         logger.info(
             f"Task {task_id} ({msg.body['info']['request']}) completed successfully"
         )
-        reactor.callFromThread(fire_task_callback, deferred, msg.body)
+        fire_task_callback(future, msg.body)
     else:
-        # It either failed or was canceled. Call the errback
+        # It either failed or was canceled. Fire the error path.
         logger.info(f"Task {task_id} failed.")
-        reactor.callFromThread(fire_task_errback, deferred, msg.body)
+        fire_task_errback(future, msg.body)
 
 
-def _handle_tag(msg):
+async def _handle_tag(msg):
     """Handle buildsys.tag messages to trigger rebuilds."""
     tag = msg.body["tag"]
 
     if tag == config.control["trigger_tag"]:
-        return _handle_trigger_tag(msg)
+        return await _handle_trigger_tag(msg)
 
     elif tag in state.pending_nvr_tags:
         return _handle_awaited_tag(msg)
@@ -142,7 +133,7 @@ def _handle_tag(msg):
     raise Drop()
 
 
-def _handle_trigger_tag(msg):
+async def _handle_trigger_tag(msg):
     # Check whether this component is meaningful to us
     if not config.is_eligible(msg.body["name"], is_downstream=False):
         raise Drop()
@@ -159,13 +150,10 @@ def _handle_trigger_tag(msg):
     batching.message_batch_processor.reset()
 
     # Save this message to the database so it isn't lost if we restart.
-    # It's necessary to block this thread so that we don't mark this message
-    # as accepted from the AMQP queue before it's fully saved to the database.
+    # We await this directly so the message isn't acked from the AMQP queue
+    # before it's fully saved to the database.
     logger.debug(f"Adding {msg.body['name']} to the next batch.")
-    blockingCallFromThread(
-        reactor,
-        BuildTrigger(msg.body["name"], msg.body["build_id"]).async_init,
-    )
+    await BuildTrigger(msg.body["name"], msg.body["build_id"]).async_init()
 
 
 def _handle_awaited_tag(msg):
@@ -175,14 +163,14 @@ def _handle_awaited_tag(msg):
     nvr = f"{msg.body['name']}-{msg.body['version']}-{msg.body['release']}"
 
     try:
-        deferred = state.pending_nvr_tags.pop(tag, nvr)
-        reactor.callFromThread(fire_task_callback, deferred, nvr)
+        future = state.pending_nvr_tags.pop(tag, nvr)
+        fire_task_callback(future, nvr)
     except KeyError:
         logger.debug(f"NVR {nvr} not found in tag {tag}, ignoring.")
         raise Drop()
 
 
-def message_handler(msg):
+async def message_handler(msg):
     logger.debug(f"Received {msg.topic}: UUID {msg.id}")
     try:
         if msg.topic.endswith("buildsys.repo.init"):
@@ -195,7 +183,7 @@ def message_handler(msg):
             _handle_task_state_change(msg)
 
         elif msg.topic.endswith("buildsys.tag"):
-            _handle_tag(msg)
+            await _handle_tag(msg)
 
         else:
             # Ignore any unhandled message topics
@@ -222,12 +210,11 @@ def message_handler(msg):
 
 async def check_tasks():
     # Snapshot task IDs before awaiting to avoid issues with dict changing
-    # during iteration. Don't store Deferred references across await points.
-    with _active_tasks_lock:
-        watched_tasks = list(state.active_tasks.keys())
+    # during iteration. Don't store Future references across await points.
+    watched_tasks = list(state.active_tasks.keys())
 
     for task in watched_tasks:
-        deferred = None
+        future = None
         try:
             taskinfo = await call_koji("getTaskInfo", task, request=True)
 
@@ -238,10 +225,10 @@ async def check_tasks():
             taskinfo["request"] = request
             taskinfo["info"] = {"request": request}
 
-            # Atomically pop the task and claim ownership of the Deferred.
-            # If a message handler already claimed it during the await, skip.
-            deferred = _claim_active_task(task)
-            if deferred is None:
+            # Claim ownership of the Future. If a message handler already
+            # claimed it during the await, skip.
+            future = _claim_active_task(task)
+            if future is None:
                 # Already handled by a message handler
                 continue
 
@@ -250,7 +237,7 @@ async def check_tasks():
                 logger.info(
                     f"Task {task} ({taskinfo['request'][0]}) completed successfully"
                 )
-                reactor.callFromThread(fire_task_callback, deferred, taskinfo)
+                fire_task_callback(future, taskinfo)
 
             elif taskinfo["state"] in (
                 koji.TASK_STATES["FREE"],
@@ -258,33 +245,33 @@ async def check_tasks():
                 koji.TASK_STATES["ASSIGNED"],
             ):
                 # Still processing; put it back and continue
-                _reinsert_active_task(task, deferred)
+                _reinsert_active_task(task, future)
                 continue
 
             else:
-                # It either failed or was canceled. Call the errback
+                # It either failed or was canceled. Fire the error path.
                 logger.info(f"Task {task} failed.")
-                reactor.callFromThread(fire_task_errback, deferred, taskinfo)
+                fire_task_errback(future, taskinfo)
 
         except Exception:
             # Log any failures so we don't block future checks.
             logger.exception(f"Unexpected failure in task {task}")
 
-            # Cancel the Deferred we already claimed, or claim it now if the
+            # Cancel the Future we already claimed, or claim it now if the
             # failure happened before ownership was taken.
-            if deferred is None:
-                deferred = _claim_active_task(task)
-            if deferred is not None:
-                reactor.callFromThread(deferred.cancel)
+            if future is None:
+                future = _claim_active_task(task)
+            if future is not None:
+                future.cancel()
 
 
 async def check_tags():
     # Snapshot the tag keys to avoid issues with dict changing during iteration
     for tag in list(state.pending_nvr_tags.keys()):
-        # Collect only NVR names (not Deferreds) before the await.
-        # This avoids holding Deferred references across the yield point,
+        # Collect only NVR names (not Futures) before the await.
+        # This avoids holding Future references across the yield point,
         # which could lead to duplicate callbacks if a message handler
-        # claims the same Deferred during the await.
+        # claims the same Future during the await.
         watched_nvrs = {nvr for nvr, _ in state.pending_nvr_tags.get_nvrs_from_tag(tag)}
 
         if not watched_nvrs:
@@ -298,8 +285,8 @@ async def check_tags():
         for nvr in builds:
             if nvr in watched_nvrs:
                 try:
-                    deferred = state.pending_nvr_tags.pop(tag, nvr)
-                    reactor.callFromThread(fire_task_callback, deferred, nvr)
+                    future = state.pending_nvr_tags.pop(tag, nvr)
+                    fire_task_callback(future, nvr)
                 except KeyError:
                     # Already claimed by a message handler
                     # We will just log this and avoid calling the callback again
@@ -308,91 +295,126 @@ async def check_tags():
                     )
 
 
-def fire_task_callback(deferred, data):
+def fire_task_callback(future, data):
     try:
-        deferred.callback(data)
-    except AlreadyCalledError:
-        # Most likely due to a timeout, so ignore it
-        logger.exception("Deferred already called")
+        future.set_result(data)
+    except asyncio.InvalidStateError:
+        # Most likely due to a timeout/cancellation race; ignore it.
+        logger.exception("Future already resolved")
 
 
-def fire_task_errback(deferred, data):
+def fire_task_errback(future, data):
     err = kojihelpers.errors.TaskFailedError()
     err.data = data
     try:
-        deferred.errback(err)
-    except AlreadyCalledError:
-        # Most likely due to a timeout, so ignore it
-        logger.exception("Deferred already called")
+        future.set_exception(err)
+    except asyncio.InvalidStateError:
+        # Most likely due to a timeout/cancellation race; ignore it.
+        logger.exception("Future already resolved")
 
 
-def register_task_id(task_id, timeout=config.task_timeout):
+def register_task_id(task_id) -> asyncio.Future:
+    """
+    Register a Koji task ID for tracking.
+
+    Returns an ``asyncio.Future`` that resolves when the task completes, via
+    a fedora-messaging state-change message or the periodic check_tasks()
+    poll. Use ``wait_for_task_id()`` for the common case of registering and
+    waiting with a timeout.
+    """
     logger.debug(f"Registering task {task_id}")
-    with _active_tasks_lock:
-        if task_id in state.active_tasks:
-            raise ValueError("Cannot register the same task ID twice")
+    if task_id in state.active_tasks:
+        raise ValueError("Cannot register the same task ID twice")
 
-        deferred = Deferred()
-        state.active_tasks[task_id] = deferred
+    future = asyncio.get_running_loop().create_future()
+    state.active_tasks[task_id] = future
 
-    deferred.addTimeout(timeout, reactor)
-    deferred.addErrback(cancel_timed_out_task, task_id)
-
-    return deferred
+    return future
 
 
-def register_nvr_tag(
-    tag: str, nvr: str, timeout: float = config.tag_timeout
-) -> Deferred:
+async def wait_for_task_id(task_id, timeout: float = config.task_timeout):
+    """
+    Register a Koji task ID and wait for it to complete.
+
+    Args:
+        task_id: The Koji task ID to wait for
+        timeout: Timeout in seconds (defaults to config.task_timeout)
+
+    Returns:
+        The task-completion data (a state-change message body or
+        ``getTaskInfo`` result) once the task finishes.
+
+    Raises:
+        kojihelpers.errors.TaskFailedError: If the task fails or is canceled.
+        kojihelpers.errors.TaskTimeoutError: If the task doesn't complete
+            within ``timeout`` seconds. The underlying Koji task is
+            best-effort canceled first.
+    """
+    future = register_task_id(task_id)
+    try:
+        return await asyncio.wait_for(future, timeout)
+    except asyncio.TimeoutError:
+        # The Future is already done (cancelled by wait_for()); just remove
+        # it from active_tasks so check_tasks()/message handlers ignore it.
+        _claim_active_task(task_id)
+
+        # The Koji task may still be running, so cancel it. Cancellation is
+        # best-effort: kojihelpers.builds.cancel_task() logs and swallows
+        # any failure of its own.
+        await kojihelpers.builds.cancel_task(task_id)
+
+        err = kojihelpers.errors.TaskTimeoutError()
+        err.data = {
+            "id": task_id,
+            "info": {
+                "request": [None, None, None],
+                "ebs_state": "TIMEOUT",
+            },
+        }
+        raise err from None
+
+
+def register_nvr_tag(tag: str, nvr: str) -> asyncio.Future:
     """
     Register an NVR to watch for appearance in a specific tag.
 
-    Creates a Deferred that will be called when the NVR appears in the tag.
+    Returns an ``asyncio.Future`` that will resolve when the NVR appears in
+    the tag. Use ``wait_for_nvr_tag()`` for the common case of registering
+    and waiting with a timeout.
 
     Args:
         tag: The tag name to watch
         nvr: The NVR to wait for
-        timeout: Timeout in seconds (defaults to config.task_timeout)
 
     Returns:
-        A Deferred that will be called when the NVR appears in the tag
+        An asyncio.Future that will resolve when the NVR appears in the tag
     """
     logger.debug(f"Registering NVR {nvr} for tag {tag}")
 
-    deferred = Deferred()
-    deferred.addTimeout(timeout, reactor)
+    future = asyncio.get_running_loop().create_future()
+    state.pending_nvr_tags.push(tag, nvr, future)
 
-    state.pending_nvr_tags.push(tag, nvr, deferred)
-
-    return deferred
+    return future
 
 
-def cancel_timed_out_task(failure, task_id):
-    # Reraise the original exception, catching timeout/cancel so we can
-    # still request Koji cancellation below. Unrelated failures propagate.
-    try:
-        failure.raiseException()
-    except (DeferredTimeoutError, CancelledError):
-        pass
+async def wait_for_nvr_tag(tag: str, nvr: str, timeout: float = config.tag_timeout):
+    """
+    Register an NVR and wait for it to appear in a tag.
 
-    # If we got a timeout (or a manual cancel), the Koji task may still be
-    # running, so cancel it asynchronously. Cancellation is best-effort.
-    reactor.callFromThread(_do_cancelation, task_id)
+    Args:
+        tag: The tag name to watch
+        nvr: The NVR to wait for
+        timeout: Timeout in seconds (defaults to config.tag_timeout)
 
-    # Remove the Deferred from the active tasks dictionary
-    _claim_active_task(task_id)
+    Returns:
+        The NVR, once it has appeared in the tag.
 
-    # Raise a TaskTimeoutError with the task_id
-    err = kojihelpers.errors.TaskTimeoutError()
-    err.data = {
-        "id": task_id,
-        "info": {
-            "request": [None, None, None],
-            "ebs_state": "TIMEOUT",
-        },
-    }
-    raise err
-
-
-def _do_cancelation(task_id):
-    return Deferred.fromCoroutine(kojihelpers.builds.cancel_task(task_id))
+    Raises:
+        asyncio.TimeoutError: If the NVR doesn't appear within ``timeout``
+            seconds. There is nothing to cancel for a tag wait, so (unlike
+            wait_for_task_id()) this is not translated into a domain-specific
+            exception; callers that care (e.g. SideTag._prepare()) can
+            isinstance-check for it directly.
+    """
+    future = register_nvr_tag(tag, nvr)
+    return await asyncio.wait_for(future, timeout)

@@ -16,10 +16,9 @@
 
 # SPDX-License-Identifier: 	GPL-3.0-or-later
 
+import asyncio
 from collections.abc import Generator
 from typing import ClassVar
-
-from twisted.internet.defer import Deferred
 
 
 class PendingNVRTags:
@@ -27,11 +26,12 @@ class PendingNVRTags:
     A data structure to track NVRs waiting to appear in specific tags.
 
     Maps tag names to NVRs, where each tag+NVR combination is associated
-    with a Deferred object that will be called when the NVR appears in the tag.
+    with an asyncio.Future that will be resolved when the NVR appears in the
+    tag.
     """
 
     def __init__(self) -> None:
-        self._data: dict[str, dict[str, Deferred]] = {}
+        self._data: dict[str, dict[str, asyncio.Future]] = {}
 
     def __contains__(self, tag: object) -> bool:
         return tag in self._data
@@ -42,50 +42,50 @@ class PendingNVRTags:
         """
         return list(self._data.keys())
 
-    def push(self, tag: str, nvr: str, deferred: Deferred) -> None:
+    def push(self, tag: str, nvr: str, future: asyncio.Future) -> None:
         """
-        Store a Deferred for the given tag and NVR combination.
+        Store a Future for the given tag and NVR combination.
 
         Args:
             tag: The tag name to watch
             nvr: The NVR to wait for
-            deferred: The Deferred to associate with this tag+NVR
+            future: The Future to associate with this tag+NVR
         """
         if tag not in self._data:
             self._data[tag] = {}
-        self._data[tag][nvr] = deferred
+        self._data[tag][nvr] = future
 
-    def pop(self, tag: str, nvr: str) -> Deferred:
+    def pop(self, tag: str, nvr: str) -> asyncio.Future:
         """
-        Remove and return the Deferred for the given tag and NVR combination.
+        Remove and return the Future for the given tag and NVR combination.
 
         Args:
             tag: The tag name
             nvr: The NVR
 
         Returns:
-            The Deferred associated with this tag+NVR
+            The Future associated with this tag+NVR
 
         Raises:
             KeyError: If the tag or NVR is not found
         """
-        deferred = self._data[tag].pop(nvr)
+        future = self._data[tag].pop(nvr)
         # Clean up empty tag entries
         if not self._data[tag]:
             del self._data[tag]
-        return deferred
+        return future
 
     def get_nvrs_from_tag(
         self, tag: str
-    ) -> Generator[tuple[str, Deferred], None, None]:
+    ) -> Generator[tuple[str, asyncio.Future], None, None]:
         """
-        Yield all NVR and Deferred pairs for the given tag.
+        Yield all NVR and Future pairs for the given tag.
 
         Args:
             tag: The tag name to get NVRs for
 
         Yields:
-            Tuples of (nvr, deferred) for each NVR registered under the tag
+            Tuples of (nvr, future) for each NVR registered under the tag
         """
         if tag in self._data:
             yield from self._data[tag].items()
@@ -99,7 +99,7 @@ class ELNBuildSyncState:
     """
 
     # A dictionary to keep track of tasks in-progress
-    active_tasks: ClassVar[dict] = {}
+    active_tasks: ClassVar[dict[int, asyncio.Future]] = {}
 
     # A data structure to keep track of NVRs we're waiting to
     # appear in a tag.

@@ -51,11 +51,7 @@ class RebuildAttempt:
                 successes[value["id"]] = value
             else:
                 try:
-                    try:
-                        value.raiseException()
-                    except Exception as e:
-                        data = e.data
-
+                    data = value.data
                     id = data["id"]
                     failures[id] = data
                 except Exception:

@@ -17,10 +17,10 @@
 # SPDX-License-Identifier: 	GPL-3.0-or-later
 
 
+import asyncio
 import logging
 
 import koji
-from twisted.internet.defer import DeferredList
 
 from .. import config
 from .connection import call_koji
@@ -118,28 +118,30 @@ def _start_builds_thread(bsys, target, scm_urls, fail_fast=False):
     return task_index
 
 
-async def wait_for_task(task_id):
+async def wait_for_task(task_id, timeout=config.task_timeout):
     # Imported lazily to avoid a circular import with listener/batching.
     from .. import listener
 
     logger.debug(f"Waiting for {task_id}.")
 
     # Wait until this task is complete
-    await listener.register_task_id(task_id)
+    return await listener.wait_for_task_id(task_id, timeout)
 
 
 async def wait_for_tasks(task_ids, timeout=config.task_timeout):
     # Imported lazily to avoid a circular import with listener/batching.
     from .. import listener
 
-    deferreds = []
+    logger.debug(f"Waiting for {len(task_ids)} tasks to complete.")
 
-    for task_id in task_ids:
-        logger.debug(f"Waiting for {task_id} to complete.")
-        deferreds.append(listener.register_task_id(task_id, timeout))
-
-    result = await DeferredList(deferreds, consumeErrors=True)
-    return result
+    results = await asyncio.gather(
+        *(listener.wait_for_task_id(task_id, timeout) for task_id in task_ids),
+        return_exceptions=True,
+    )
+    # Mirrors the shape of Twisted's DeferredList(consumeErrors=True): a list
+    # of (success, value) tuples, where value is the result on success or the
+    # raised exception (not wrapped in anything Twisted-specific) on failure.
+    return [(not isinstance(result, BaseException), result) for result in results]
 
 
 async def cancel_task(task_id):

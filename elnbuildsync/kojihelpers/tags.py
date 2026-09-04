@@ -18,12 +18,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from cachetools import LRUCache, cached
 from cachetools.keys import hashkey
-from twisted.internet.defer import DeferredList
-from twisted.internet.defer import TimeoutError as DeferredTimeoutError
 
 from .. import config, kojihelpers
 from .connection import call_koji
@@ -128,7 +127,7 @@ class SideTag:
                 await self.remove()
 
                 # Check if the exception is a TimeoutError
-                if isinstance(exc, DeferredTimeoutError):
+                if isinstance(exc, asyncio.TimeoutError):
                     raise SideTagTimeoutError(
                         "Failed to tag builds into side tag"
                     ) from exc
@@ -230,30 +229,22 @@ async def wait_for_nvrs_in_tag(tag, nvrs):
     :params str tag: The tag name to wait for
     :params list nvrs: The list of nvrs to wait for
     :return list: A list of (success, value) results. On failure, ``value`` is
-        the underlying exception (e.g. DeferredTimeoutError), not a Twisted
-        Failure, so callers can isinstance-check timeout errors.
+        the underlying exception (e.g. asyncio.TimeoutError), so callers can
+        isinstance-check timeout errors directly.
     """
     # Imported lazily to avoid a circular import with listener/batching.
     from .. import listener
 
     logger.info(f"Waiting for {len(nvrs)} nvrs to appear in tag {tag}")
 
-    deferreds = []
-    for nvr in nvrs:
-        deferred = listener.register_nvr_tag(tag, nvr, timeout=config.tag_timeout)
-        deferreds.append(deferred)
-
-    result = await DeferredList(deferreds, consumeErrors=True)
-    # DeferredList(consumeErrors=True) wraps failures as Failure objects.
-    # Unwrap to the underlying exception so timeout handling can match
-    # DeferredTimeoutError directly.
-    unwrapped = []
-    for success, value in result:
-        if success:
-            unwrapped.append((True, value))
-        else:
-            unwrapped.append((False, value.value if hasattr(value, "value") else value))
-    return unwrapped
+    results = await asyncio.gather(
+        *(
+            listener.wait_for_nvr_tag(tag, nvr, timeout=config.tag_timeout)
+            for nvr in nvrs
+        ),
+        return_exceptions=True,
+    )
+    return [(not isinstance(result, BaseException), result) for result in results]
 
 
 async def get_nvrs_from_tag(tag):
