@@ -17,15 +17,14 @@
 # SPDX-License-Identifier: 	GPL-3.0-or-later
 
 
+import asyncio
 import json
 import logging
 import re
 
-import requests.exceptions
-import twisted.internet.utils
+import httpx
 from tenacity import retry as retry_on_exception
 from tenacity import stop_after_delay, wait_exponential
-from txrequests import Session
 
 from . import dynamic as dynamic_config
 from . import static as static_config
@@ -201,6 +200,28 @@ def split_module(comp):
     }
 
 
+async def _git_ls_remote(*args: str) -> bytes:
+    """Run ``git ls-remote <args>`` and return combined stdout+stderr bytes.
+
+    Mirrors the semantics of the previous
+    ``twisted.internet.utils.getProcessOutput(..., errortoo=True)`` call
+    this replaced: the process's exit code is not checked, and stdout/stderr
+    are combined into a single bytes result.
+
+    Tests exercising this (directly or via get_config_ref) must mock
+    ``asyncio.create_subprocess_exec`` rather than actually spawning git.
+    """
+    process = await asyncio.create_subprocess_exec(
+        "/usr/bin/git",
+        "ls-remote",
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    stdout, _ = await process.communicate()
+    return stdout
+
+
 async def get_config_ref(url):
     """Gets the ref for the config SCMURL
 
@@ -215,17 +236,9 @@ async def get_config_ref(url):
     logger.info(f"Getting config ref for {scm['link']} {scm['ref']}")
 
     if scm["ref"]:
-        output = await twisted.internet.utils.getProcessOutput(
-            executable="/usr/bin/git",
-            args=("ls-remote", "--branches", scm["link"], scm["ref"]),
-            errortoo=True,
-        )
+        output = await _git_ls_remote("--branches", scm["link"], scm["ref"])
     else:
-        output = await twisted.internet.utils.getProcessOutput(
-            executable="/usr/bin/git",
-            args=("ls-remote", "--branches", scm["link"]),
-            errortoo=True,
-        )
+        output = await _git_ls_remote("--branches", scm["link"])
 
     if not output:
         scmref = scm["ref"]
@@ -298,15 +311,15 @@ async def get_distro_packages(
 
             logger.debug(f"downloading {url}")
 
-            with Session() as session:
+            async with httpx.AsyncClient() as client:
                 try:
-                    r = await session.get(
+                    r = await client.get(
                         url,
-                        allow_redirects=True,
+                        follow_redirects=True,
                         timeout=config_fetch_timeout,
                     )
                     r.raise_for_status()
-                except requests.exceptions.RequestException as e:
+                except httpx.HTTPError as e:
                     raise ConfigError(f"HTTP Error downloading {url}") from e
 
                 for line in r.text.splitlines():
@@ -337,11 +350,11 @@ async def get_rawhide_tag():
 
     # Retrieve the list of "pending" (aka development) releases
     url = "https://bodhi.fedoraproject.org/releases?state=pending"
-    with Session() as session:
+    async with httpx.AsyncClient() as client:
         try:
-            r = await session.get(
+            r = await client.get(
                 url,
-                allow_redirects=True,
+                follow_redirects=True,
                 timeout=config_fetch_timeout,
             )
             r.raise_for_status()
@@ -350,7 +363,7 @@ async def get_rawhide_tag():
         except json.decoder.JSONDecodeError as e:
             raise ConfigError("Could not parse JSON from Bodhi releases") from e
 
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPError as e:
             raise ConfigError("HTTP Error") from e
 
     # Get the stable tag corresponding to the rawhide branch
