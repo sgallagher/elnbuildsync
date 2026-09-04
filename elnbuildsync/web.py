@@ -16,6 +16,8 @@
 
 # SPDX-License-Identifier: 	GPL-3.0-or-later
 
+from __future__ import annotations
+
 import asyncio
 import html
 import importlib.metadata
@@ -26,13 +28,15 @@ import secrets
 from string import Template
 from urllib.parse import quote, urlparse
 
-from twisted.internet import reactor
-from twisted.internet.defer import Deferred
-from twisted.web.error import Error as WebError
-from twisted.web.resource import Resource
-from twisted.web.server import NOT_DONE_YET, Site
-from twisted.web.static import File
-from twisted.web.util import Redirect
+import uvicorn
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import (
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
+from fastapi.staticfiles import StaticFiles
 
 from . import auth, batching, config, status
 
@@ -83,499 +87,39 @@ async def load_status_page() -> None:
     logger.debug("Status page template loaded from %s", template_path)
 
 
-class RootResource(Resource):
-    def getChild(self, name, request):
-        if name == b"":
-            return Redirect(b"/status.html")
-        return Resource.getChild(self, name, request)
-
-
-class StartupResource(Resource):
-    """
-    StartupResource
-
-    Returns either a 200 or a 503 response code, depending on whether
-    the configuration has been loaded successfully.
-    """
-
-    isLeaf = True
-
-    def getChild(self, name, request):
-        if name == "":
-            return self
-        return Resource.getChild(self, name, request)
-
-    def render_GET(self, request):
-        request.setHeader("Cache-Control", "no-cache")
-        if not started:
-            request.setResponseCode(503)
-        return b"started"
-
-
-class LivenessResource(Resource):
-    """
-    LivenessResource
-
-    Returns either a 200 or a 500 response code or will time out if the server is deadlocked.
-
-    Certain failures can set the 'alive' variable to False to indicate an unrecoverable error.
-    """
-
-    isLeaf = True
-
-    def getChild(self, name, request):
-        if name == "":
-            return self
-        return Resource.getChild(self, name, request)
-
-    def render_GET(self, request):
-
-        request.setHeader("Cache-Control", "no-cache")
-        if not alive:
-            request.setResponseCode(500)
-        return b"alive"
-
-
-class StatusJSONResource(Resource):
-    """
-    StatusJSONResource
-
-    Returns either a 200 or 503 response code, depending on whether the first
-    periodic status update has completed successfully.
-
-    Outputs the full status data as a JSON document
-    """
-
-    def getChild(self, name, request):
-        if name == "":
-            return self
-        return Resource.getChild(self, name, request)
-
-    def render_GET(self, request):
-        request.setHeader("Content-Type", "application/json")
-        request.setHeader("Cache-Control", "no-cache")
-        if not status.encoded_json_data:
-            request.setResponseCode(503)
-            return b""
-
-        return status.encoded_json_data
-
-
-class StatusPageResource(Resource):
-    """
-    StatusPageResource
-
-    Returns a static HTML page that fetches /status.json and renders the
-    build status table. Publicly accessible.
-    """
-
-    isLeaf = True
-
-    def getChild(self, name, request):
-        if name == "":
-            return self
-        return Resource.getChild(self, name, request)
-
-    def render_GET(self, request):
-        request.setHeader("Content-Type", "text/html; charset=utf-8")
-        request.setHeader("Cache-Control", "no-cache")
-        if not status_page_html:
-            request.setResponseCode(500)
-            return b"Status page template not available"
-        return status_page_html
-
-
-class ProtectedResource(Resource):
-    """
-    Base resource for admin-only endpoints protected by OpenID Connect.
-
-    Subclasses must implement _handle_get(request, user) and optionally
-    _handle_post(request, user) for GET and POST requests, respectively.
-    """
-
-    def _done(self, request, data):
-        if not request.finished:
-            request.finish()
-
-    def _failed(self, request, failure):
-        logger.error(failure)
-        if not request.finished:
-            request.setResponseCode(500)
-            request.write(b"Internal server error")
-            request.finish()
-
-    def _run_async(self, request, coro):
-        deferred = Deferred.fromFuture(asyncio.ensure_future(coro))
-        deferred.addCallback(lambda data: self._done(request, data))
-        deferred.addErrback(lambda failure: self._failed(request, failure))
-        return NOT_DONE_YET
-
-    def render_GET(self, request):
-        return self._run_async(request, self._do_get(request))
-
-    async def _require_user(self, request, *, method=None):
-        if method is None:
-            method = request.method.decode("utf-8").upper()
-
-        user = await _check_request_auth(request)
-        if user is None:
-            if method == "GET":
-                _redirect_to_login(request)
-            else:
-                request.setResponseCode(401)
-                request.write(b"Authentication required\n")
-            return None
-
-        if auth.check_group_membership(user["groups"]):
-            return user
-
-        admin_groups = config.main["open_id_connect"]["admin_groups"]
-        request.setResponseCode(403)
-        request.setHeader("Content-Type", "text/html; charset=utf-8")
-        request.write(
-            (
-                "Access denied. You must be a member of one of these admin groups: "
-                f"{', '.join(admin_groups)}"
-            ).encode()
-        )
-        return None
-
-    async def _do_get(self, request):
-        user = await self._require_user(request)
-        if user is None:
-            return
-        await self._handle_get(request, user)
-
-    async def _handle_get(self, request, user):
-        raise NotImplementedError
-
-    def render_POST(self, request):
-        return self._run_async(request, self._do_post(request))
-
-    async def _do_post(self, request):
-        request.setHeader("Cache-Control", "no-cache")
-
-        user = await self._require_user(request)
-        if user is None:
-            return
-
-        await self._handle_post(request, user)
-
-    async def _handle_post(self, request, user):
-        # If _handle_post is not implemented, return a 405 Method Not Allowed
-        # response
-        del user
-        request.setResponseCode(405)
-        request.setHeader("Allow", "GET")
-        request.write(b"Method not allowed\n")
-
-
-class TriggerBuildResource(ProtectedResource):
-    """
-    TriggerBuildResource
-
-    Accepts a POST request containing a JSON list of components to rebuild for
-    ELN. GET shows an informational HTML page with curl instructions. POST with
-    a Bearer token triggers builds. Requires authentication if OpenID Connect
-    is configured. The components are expected to be provided as their downstream
-    names.
-    """
-
-    isLeaf = True
-
-    def getChild(self, name, request):
-        if name == "":
-            return self
-        return Resource.getChild(self, name, request)
-
-    async def _handle_get(self, request, user):
-        """Show a simple form or info page for the trigger endpoint."""
-        request.setHeader("Content-Type", "text/html; charset=utf-8")
-        request.setHeader("Cache-Control", "no-cache")
-        username_html, groups_html = _render_user_html(user)
-
-        token_block = _bearer_token_html_block(
-            request,
-            page_url="/trigger",
-            post_path="/trigger",
-            curl_extra='-H "Content-Type: application/json" -d \'["bash", "glibc"]\' ',
-        )
-
-        html = f"""<!DOCTYPE html>
-<html>
-<head><title>ELN Build Trigger</title></head>
-<body>
-<h1>ELN Build Trigger</h1>
-<p>Logged in as: <strong>{username_html}</strong></p>
-<p>Groups: {groups_html}</p>
-<p>To trigger builds, POST a JSON array of downstream component names to this endpoint.</p>
-{token_block}
-<p><a href="/logout">Logout</a></p>
-</body>
-</html>"""
-        request.write(html.encode())
-
-    async def _handle_post(self, request, user):
-        if not _require_bearer_for_mutation(request):
-            return
-
-        logger.info(f"Build trigger request from user {user['username']}")
-
-        if not started or config.is_paused():
-            request.setResponseCode(503)
-            return
-
-        content_type = request.getHeader("Content-Type")
-        if not content_type or content_type != "application/json":
-            request.setResponseCode(415)
-            request.write(b"Unsupported Content-Type\n")
-            raise WebError("Invalid Content-Type")
-
-        # Read in the content
-        try:
-            components = json.load(request.content)
-        except json.decoder.JSONDecodeError:
-            logger.exception()
-            raise
-
-        request.write(f"User {user['username']} requesting builds of:\n".encode())
-        for comp in sorted(components):
-            request.write(f"{comp}\n".encode())
-
-        reactor.callLater(0, _build_from_components, components)
-
-
-def _build_from_components(components):
-    # Wrap this call into a Deferred so we can fire-and-forget it in the
-    # mainloop
-    Deferred.fromCoroutine(batching.rebuild_from_components(components))
-
-
-class LogLevelResource(Resource):
-    """
-    LogLevelResource
-
-    Runtime log level control via /loglevel/<LEVEL>. GET shows an informational
-    HTML page with curl instructions. POST with a Bearer token sets the level.
-    Requires authentication if OpenID Connect is configured, and admin group
-    membership when auth is enabled.
-    """
-
-    def getChild(self, name, request):
-        return LogLevelPage(name)
-
-
-class LogLevelPage(ProtectedResource):
-    def __init__(self, name):
-        super().__init__()
-        self.loglevel = name.decode("UTF-8").upper()
-
-    def _log_level_path(self):
-        return f"/loglevel/{quote(self.loglevel, safe='')}"
-
-    async def _handle_get(self, request, user):
-        request.setHeader("Content-Type", "text/html; charset=utf-8")
-        request.setHeader("Cache-Control", "no-cache")
-        username_html, groups_html = _render_user_html(user)
-        loglevel_html = _escape_html(self.loglevel)
-        current_level_html = _escape_html(
-            str(logging.getLevelName(logging.getLogger().getEffectiveLevel()))
-        )
-
-        invalid_block = ""
-        try:
-            logging._checkLevel(self.loglevel)
-        except (TypeError, ValueError):
-            invalid_block = (
-                f"<p><strong>Invalid log level: {loglevel_html}</strong></p>"
-            )
-
-        token_block = _bearer_token_html_block(
-            request,
-            page_url=self._log_level_path(),
-            post_path=self._log_level_path(),
-        )
-
-        html = f"""<!DOCTYPE html>
-<html>
-<head><title>ELN Build Sync Log Level</title></head>
-<body>
-<h1>ELN Build Sync Log Level — {loglevel_html}</h1>
-<p>Logged in as: <strong>{username_html}</strong></p>
-<p>Groups: {groups_html}</p>
-<p>Current root log level: {current_level_html}</p>
-<p>To set the log level to {loglevel_html}, POST to this endpoint with a Bearer token.</p>
-{invalid_block}
-{token_block}
-<p><a href="/logout">Logout</a></p>
-</body>
-</html>"""
-        request.write(html.encode())
-
-    async def _handle_post(self, request, user):
-        if not _require_bearer_for_mutation(request):
-            return
-
-        try:
-            logging.getLogger().setLevel(self.loglevel)
-        except ValueError:
-            request.setResponseCode(400)
-            request.write(f"Invalid log level: {self.loglevel}\n".encode())
-            return
-
-        logger.critical(
-            "Log level changed to %s by user %s",
-            self.loglevel,
-            user["username"],
-        )
-        request.write(f"Log level set to {self.loglevel}\n".encode())
-
-
-class ControlResource(Resource):
-    """
-    ControlResource
-
-    Runtime control endpoints for ELNBuildSync. Currently supports pausing and
-    unpausing message processing via /control/pause and /control/unpause.
-    GET shows an informational HTML page with curl instructions. POST with a
-    Bearer token performs the action. Requires authentication if OpenID Connect
-    is configured, and admin group membership when auth is enabled.
-    """
-
-    def getChild(self, name, request):
-        return ControlPage(name)
-
-
-class ControlPage(ProtectedResource):
-    def __init__(self, name):
-        super().__init__()
-        self.action = name.decode("UTF-8").lower()
-
-    def _control_path(self):
-        return f"/control/{quote(self.action, safe='')}"
-
-    def _persistence_warning(self):
-        if config.scmurl:
-            config_location = config.scmurl
-        else:
-            config_location = "the dynamic configuration source"
-
-        return (
-            "WARNING: This pause state is not persistent and will be reset when "
-            "ELNBuildSync restarts.\n"
-            "To make it permanent, update control.pause in the dynamic "
-            f"configuration at {config_location}.\n"
-        )
-
-    async def _handle_get(self, request, user):
-        request.setHeader("Cache-Control", "no-cache")
-
-        if not started or config.control is None:
-            request.setResponseCode(503)
-            request.write(b"Configuration not loaded\n")
-            return
-
-        if self.action not in ("pause", "unpause"):
-            request.setResponseCode(404)
-            request.write(f"Unknown control action: {self.action}\n".encode())
-            return
-
-        request.setHeader("Content-Type", "text/html; charset=utf-8")
-        username_html, groups_html = _render_user_html(user)
-        action_html = _escape_html(self.action)
-        current_state_html = _escape_html("paused" if config.is_paused() else "active")
-        action_verb_html = _escape_html(
-            "pause" if self.action == "pause" else "unpause"
-        )
-        persistence_warning_html = _escape_html(self._persistence_warning())
-
-        token_block = _bearer_token_html_block(
-            request,
-            page_url=self._control_path(),
-            post_path=self._control_path(),
-        )
-
-        html = f"""<!DOCTYPE html>
-<html>
-<head><title>ELN Build Sync Control</title></head>
-<body>
-<h1>ELN Build Sync Control — {action_html}</h1>
-<p>Logged in as: <strong>{username_html}</strong></p>
-<p>Groups: {groups_html}</p>
-<p>Current state: {current_state_html}</p>
-<p>To {action_verb_html} processing, POST to this endpoint with a Bearer token.</p>
-<pre>{persistence_warning_html}</pre>
-{token_block}
-<p><a href="/logout">Logout</a></p>
-</body>
-</html>"""
-        request.write(html.encode())
-
-    async def _handle_post(self, request, user):
-        if not started or config.control is None:
-            request.setResponseCode(503)
-            request.write(b"Configuration not loaded\n")
-            return
-
-        if self.action not in ("pause", "unpause"):
-            request.setResponseCode(404)
-            request.write(f"Unknown control action: {self.action}\n".encode())
-            return
-
-        if not _require_bearer_for_mutation(request):
-            return
-
-        if self.action == "pause":
-            config.pause_processing()
-            message = "Processing of new requests has been paused"
-        else:
-            config.clear_pause_override()
-            message = "Processing of new requests has been resumed"
-
-        logger.critical("%s by user %s", self.action, user["username"])
-        request.write(f"{message}\n\n{self._persistence_warning()}".encode())
-
-
 # =============================================================================
-# OpenID Connect Authentication Resources
+# Helpers shared across routes
 # =============================================================================
 
 
-def _get_base_url(request) -> str:
+def _get_base_url(request: Request) -> str:
     """Extract the base URL from a request for building redirect URIs."""
-    host = request.getHeader("Host")
+    host = request.headers.get("Host")
     if not host:
-        host = request.getHost().host
-        port = request.getHost().port
-        if port not in (80, 443):
+        host = request.url.hostname
+        port = request.url.port
+        if port is not None and port not in (80, 443):
             host = f"{host}:{port}"
 
     # Check for X-Forwarded-Proto header (behind reverse proxy)
-    proto = request.getHeader("X-Forwarded-Proto")
+    proto = request.headers.get("X-Forwarded-Proto")
     if not proto:
-        proto = "https" if request.isSecure() else "http"
+        proto = "https" if request.url.scheme == "https" else "http"
 
     return f"{proto}://{host}"
 
 
-def _require_bearer_for_mutation(request) -> bool:
-    """Return False and write 403 if auth is enabled but no Bearer token present."""
+def _require_bearer_for_mutation(request: Request) -> None:
+    """Raise 403 if auth is enabled but no Bearer token is present on the request."""
     if auth.is_auth_enabled() and not auth.get_bearer_token(request):
-        request.setResponseCode(403)
-        request.write(b"Bearer token required\n")
-        return False
-    return True
+        raise HTTPException(status_code=403, detail="Bearer token required")
 
 
 def _bearer_token_html_block(
-    request, *, page_url: str, post_path: str, curl_extra: str = ""
+    request: Request, *, page_url: str, post_path: str, curl_extra: str = ""
 ) -> str:
     """Return HTML fragment with show_token toggle, token display, and curl POST example."""
-    show_token = request.args.get(b"show_token", [b""])[0] in (
-        b"1",
-        b"true",
-        b"yes",
-    )
+    show_token = request.query_params.get("show_token", "") in ("1", "true", "yes")
     if not show_token:
         show_url = _escape_html(f"{page_url}?show_token=1")
         return f'<p><a href="{show_url}">Display authorization token for curl</a></p>'
@@ -601,7 +145,7 @@ def _bearer_token_html_block(
 """
 
 
-async def _check_request_auth(request):
+async def _check_request_auth(request: Request) -> dict | None:
     """
     Check if the request is authenticated.
 
@@ -620,15 +164,6 @@ async def _check_request_auth(request):
         return None
 
     return await auth.validate_session(session_id)
-
-
-def _redirect_to_login(request):
-    """Redirect unauthenticated user to login page."""
-    return_to = _safe_return_to(request.uri, default="/status.html")
-    login_url = f"/login?return_to={quote(return_to, safe='')}"
-    request.redirect(login_url.encode())
-    request.finish()
-    return NOT_DONE_YET
 
 
 def _safe_return_to(return_to=None, default="/"):
@@ -657,226 +192,494 @@ def _safe_return_to(return_to=None, default="/"):
     return return_to
 
 
-class OIDCContainerResource(Resource):
-    """Container resource for /oidc/* endpoints."""
-
-    def getChild(self, name, request):
-        if name == b"callback":
-            return OIDCCallbackResource()
-        return Resource.getChild(self, name, request)
-
-
-class LoginResource(Resource):
+async def require_user(request: Request) -> dict:
     """
-    LoginResource
+    FastAPI dependency for admin-only endpoints protected by OpenID Connect.
 
-    Initiates the OpenID Connect authentication flow by redirecting
-    the user to the OIDC provider's authorization endpoint.
+    Unauthenticated GET requests are redirected to the login page;
+    unauthenticated POST requests get a 401 (there is no sane way to
+    "redirect" a POST body). Authenticated users who aren't in an admin
+    group get a 403.
     """
+    user = await _check_request_auth(request)
+    if user is None:
+        if request.method == "GET":
+            return_to = _safe_return_to(request.url.path, default="/status.html")
+            login_url = f"/login?return_to={quote(return_to, safe='')}"
+            raise HTTPException(status_code=307, headers={"Location": login_url})
+        raise HTTPException(status_code=401, detail="Authentication required")
 
-    isLeaf = True
+    if auth.check_group_membership(user["groups"]):
+        return user
 
-    def render_GET(self, request):
-        if not auth.is_auth_enabled():
-            request.setResponseCode(404)
-            return b"Authentication not configured"
+    admin_groups = config.main["open_id_connect"]["admin_groups"]
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Access denied. You must be a member of one of these admin groups: "
+            f"{', '.join(admin_groups)}"
+        ),
+    )
 
-        # Get the return URL (where to redirect after login)
-        return_to = _safe_return_to(
-            request.args.get(b"return_to", [b"/status.html"])[0],
-            default="/status.html",
+
+def _log_level_path(loglevel: str) -> str:
+    return f"/loglevel/{quote(loglevel, safe='')}"
+
+
+def _control_path(action: str) -> str:
+    return f"/control/{quote(action, safe='')}"
+
+
+def _persistence_warning() -> str:
+    if config.scmurl:
+        config_location = config.scmurl
+    else:
+        config_location = "the dynamic configuration source"
+
+    return (
+        "WARNING: This pause state is not persistent and will be reset when "
+        "ELNBuildSync restarts.\n"
+        "To make it permanent, update control.pause in the dynamic "
+        f"configuration at {config_location}.\n"
+    )
+
+
+# =============================================================================
+# FastAPI application
+# =============================================================================
+
+app = FastAPI()
+
+
+@app.get("/")
+async def root():
+    return RedirectResponse("/status.html", status_code=307)
+
+
+@app.get("/status")
+async def status_redirect():
+    return RedirectResponse("/status.html", status_code=307)
+
+
+@app.get("/startup")
+async def startup_probe():
+    """
+    Returns either a 200 or a 503 response code, depending on whether
+    the configuration has been loaded successfully.
+    """
+    return PlainTextResponse(
+        "started",
+        status_code=200 if started else 503,
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/alive")
+async def liveness_probe():
+    """
+    Returns either a 200 or a 500 response code or will time out if the
+    server is deadlocked.
+
+    Certain failures can set the 'alive' variable to False to indicate an
+    unrecoverable error.
+    """
+    return PlainTextResponse(
+        "alive",
+        status_code=200 if alive else 500,
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/status.json")
+async def status_json():
+    """
+    Returns either a 200 or 503 response code, depending on whether the first
+    periodic status update has completed successfully.
+
+    Outputs the full status data as a JSON document.
+    """
+    headers = {"Cache-Control": "no-cache"}
+    if not status.encoded_json_data:
+        return Response(
+            content=b"", status_code=503, media_type="application/json", headers=headers
+        )
+    return Response(
+        content=status.encoded_json_data,
+        media_type="application/json",
+        headers=headers,
+    )
+
+
+@app.get("/status.html")
+async def status_html():
+    """
+    Returns a static HTML page that fetches /status.json and renders the
+    build status table. Publicly accessible.
+    """
+    headers = {"Cache-Control": "no-cache"}
+    if not status_page_html:
+        return HTMLResponse(
+            content="Status page template not available",
+            status_code=500,
+            headers=headers,
+        )
+    return HTMLResponse(content=status_page_html, headers=headers)
+
+
+@app.get("/trigger")
+async def trigger_get(request: Request, user: dict = Depends(require_user)):
+    """Show a simple form or info page for the trigger endpoint."""
+    username_html, groups_html = _render_user_html(user)
+
+    token_block = _bearer_token_html_block(
+        request,
+        page_url="/trigger",
+        post_path="/trigger",
+        curl_extra='-H "Content-Type: application/json" -d \'["bash", "glibc"]\' ',
+    )
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head><title>ELN Build Trigger</title></head>
+<body>
+<h1>ELN Build Trigger</h1>
+<p>Logged in as: <strong>{username_html}</strong></p>
+<p>Groups: {groups_html}</p>
+<p>To trigger builds, POST a JSON array of downstream component names to this endpoint.</p>
+{token_block}
+<p><a href="/logout">Logout</a></p>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content, headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/trigger")
+async def trigger_post(request: Request, user: dict = Depends(require_user)):
+    """
+    Accepts a POST request containing a JSON list of components to rebuild for
+    ELN. Requires authentication if OpenID Connect is configured. The
+    components are expected to be provided as their downstream names.
+    """
+    _require_bearer_for_mutation(request)
+
+    logger.info(f"Build trigger request from user {user['username']}")
+
+    if not started or config.is_paused():
+        raise HTTPException(status_code=503)
+
+    content_type = request.headers.get("Content-Type")
+    if not content_type or content_type != "application/json":
+        raise HTTPException(status_code=415, detail="Unsupported Content-Type")
+
+    body = await request.body()
+    try:
+        components = json.loads(body)
+    except json.JSONDecodeError as e:
+        logger.warning("Invalid JSON in trigger request: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from e
+
+    # Fire-and-forget: schedule the rebuild on the next loop iteration.
+    asyncio.create_task(batching.rebuild_from_components(components))
+
+    lines = [f"User {user['username']} requesting builds of:"]
+    lines.extend(str(comp) for comp in sorted(components))
+    return PlainTextResponse("\n".join(lines) + "\n")
+
+
+@app.get("/loglevel/{level}")
+async def loglevel_get(
+    level: str, request: Request, user: dict = Depends(require_user)
+):
+    """Runtime log level control via /loglevel/<LEVEL>: informational HTML page."""
+    loglevel = level.upper()
+    username_html, groups_html = _render_user_html(user)
+    loglevel_html = _escape_html(loglevel)
+    current_level_html = _escape_html(
+        str(logging.getLevelName(logging.getLogger().getEffectiveLevel()))
+    )
+
+    invalid_block = ""
+    try:
+        logging._checkLevel(loglevel)
+    except (TypeError, ValueError):
+        invalid_block = f"<p><strong>Invalid log level: {loglevel_html}</strong></p>"
+
+    token_block = _bearer_token_html_block(
+        request,
+        page_url=_log_level_path(loglevel),
+        post_path=_log_level_path(loglevel),
+    )
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head><title>ELN Build Sync Log Level</title></head>
+<body>
+<h1>ELN Build Sync Log Level — {loglevel_html}</h1>
+<p>Logged in as: <strong>{username_html}</strong></p>
+<p>Groups: {groups_html}</p>
+<p>Current root log level: {current_level_html}</p>
+<p>To set the log level to {loglevel_html}, POST to this endpoint with a Bearer token.</p>
+{invalid_block}
+{token_block}
+<p><a href="/logout">Logout</a></p>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content, headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/loglevel/{level}")
+async def loglevel_post(
+    level: str, request: Request, user: dict = Depends(require_user)
+):
+    """Runtime log level control via /loglevel/<LEVEL>: POST with a Bearer token sets it."""
+    loglevel = level.upper()
+    _require_bearer_for_mutation(request)
+
+    try:
+        logging.getLogger().setLevel(loglevel)
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid log level: {loglevel}"
+        ) from None
+
+    logger.critical(
+        "Log level changed to %s by user %s",
+        loglevel,
+        user["username"],
+    )
+    return PlainTextResponse(f"Log level set to {loglevel}\n")
+
+
+@app.get("/control/{action}")
+async def control_get(
+    action: str, request: Request, user: dict = Depends(require_user)
+):
+    """
+    Runtime control endpoints for ELNBuildSync (pause/unpause message
+    processing): informational HTML page with curl instructions.
+    """
+    action = action.lower()
+    headers = {"Cache-Control": "no-cache"}
+
+    if not started or config.control is None:
+        raise HTTPException(
+            status_code=503, detail="Configuration not loaded", headers=headers
         )
 
-        # Build the callback URL
-        base_url = _get_base_url(request)
-        redirect_uri = f"{base_url}/oidc/callback"
+    if action not in ("pause", "unpause"):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown control action: {action}",
+            headers=headers,
+        )
 
-        # Generate state for CSRF protection
-        state = secrets.token_urlsafe(32)
-        _oidc_state_store[state] = {
-            "redirect_uri": redirect_uri,
-            "return_to": return_to,
-        }
+    username_html, groups_html = _render_user_html(user)
+    action_html = _escape_html(action)
+    current_state_html = _escape_html("paused" if config.is_paused() else "active")
+    action_verb_html = _escape_html("pause" if action == "pause" else "unpause")
+    persistence_warning_html = _escape_html(_persistence_warning())
 
-        # Build and redirect to authorization URL
-        auth_url = auth.build_authorization_url(redirect_uri, state)
-        request.redirect(auth_url.encode())
-        request.finish()
-        return NOT_DONE_YET
+    token_block = _bearer_token_html_block(
+        request,
+        page_url=_control_path(action),
+        post_path=_control_path(action),
+    )
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head><title>ELN Build Sync Control</title></head>
+<body>
+<h1>ELN Build Sync Control — {action_html}</h1>
+<p>Logged in as: <strong>{username_html}</strong></p>
+<p>Groups: {groups_html}</p>
+<p>Current state: {current_state_html}</p>
+<p>To {action_verb_html} processing, POST to this endpoint with a Bearer token.</p>
+<pre>{persistence_warning_html}</pre>
+{token_block}
+<p><a href="/logout">Logout</a></p>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content, headers=headers)
 
 
-class OIDCCallbackResource(Resource):
+@app.post("/control/{action}")
+async def control_post(
+    action: str, request: Request, user: dict = Depends(require_user)
+):
     """
-    OIDCCallbackResource
+    Runtime control endpoints for ELNBuildSync: POST with a Bearer token
+    performs the pause/unpause action.
+    """
+    action = action.lower()
 
-    Handles the callback from the OIDC provider after user authentication.
+    if not started or config.control is None:
+        raise HTTPException(status_code=503, detail="Configuration not loaded")
+
+    if action not in ("pause", "unpause"):
+        raise HTTPException(status_code=404, detail=f"Unknown control action: {action}")
+
+    _require_bearer_for_mutation(request)
+
+    if action == "pause":
+        config.pause_processing()
+        message = "Processing of new requests has been paused"
+    else:
+        config.clear_pause_override()
+        message = "Processing of new requests has been resumed"
+
+    logger.critical("%s by user %s", action, user["username"])
+    return PlainTextResponse(f"{message}\n\n{_persistence_warning()}")
+
+
+# =============================================================================
+# OpenID Connect Authentication Routes
+# =============================================================================
+
+
+@app.get("/login")
+async def login(request: Request):
+    """Initiate the OpenID Connect authentication flow."""
+    if not auth.is_auth_enabled():
+        raise HTTPException(status_code=404, detail="Authentication not configured")
+
+    # Get the return URL (where to redirect after login)
+    return_to = _safe_return_to(
+        request.query_params.get("return_to", "/status.html"),
+        default="/status.html",
+    )
+
+    # Build the callback URL
+    base_url = _get_base_url(request)
+    redirect_uri = f"{base_url}/oidc/callback"
+
+    # Generate state for CSRF protection
+    state = secrets.token_urlsafe(32)
+    _oidc_state_store[state] = {
+        "redirect_uri": redirect_uri,
+        "return_to": return_to,
+    }
+
+    # Build and redirect to authorization URL
+    auth_url = auth.build_authorization_url(redirect_uri, state)
+    return RedirectResponse(auth_url, status_code=307)
+
+
+@app.get("/oidc/callback")
+async def oidc_callback(request: Request):
+    """
+    Handle the callback from the OIDC provider after user authentication.
+
     Exchanges the authorization code for tokens, fetches user info,
     validates group membership, and creates a session.
     """
-
-    isLeaf = True
-
-    def _done(self, request, data):
-        pass  # Request already finished in async handler
-
-    def _failed(self, request, failure):
-        logger.error(f"OIDC callback failed: {failure}")
-        if not request.finished:
-            request.setResponseCode(500)
-            request.write(b"Authentication failed")
-            request.finish()
-
-    def render_GET(self, request):
-        deferred = Deferred.fromFuture(
-            asyncio.ensure_future(self._handle_callback(request))
+    # Check for error response from OIDC provider
+    error = request.query_params.get("error")
+    if error:
+        error_desc = request.query_params.get("error_description", "Unknown error")
+        logger.error(f"OIDC error: {error} - {error_desc}")
+        raise HTTPException(
+            status_code=401, detail=f"Authentication failed: {error_desc}"
         )
-        deferred.addCallback(lambda data: self._done(request, data))
-        deferred.addErrback(lambda failure: self._failed(request, failure))
-        return NOT_DONE_YET
 
-    async def _handle_callback(self, request):
-        # Check for error response from OIDC provider
-        error = request.args.get(b"error", [None])[0]
-        if error:
-            error_desc = request.args.get(b"error_description", [b"Unknown error"])[0]
-            logger.error(f"OIDC error: {error.decode()} - {error_desc.decode()}")
-            request.setResponseCode(401)
-            request.write(f"Authentication failed: {error_desc.decode()}".encode())
-            request.finish()
-            return
+    # Get the authorization code and state
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
 
-        # Get the authorization code and state
-        code = request.args.get(b"code", [None])[0]
-        state = request.args.get(b"state", [None])[0]
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state parameter")
 
-        if not code or not state:
-            request.setResponseCode(400)
-            request.write(b"Missing code or state parameter")
-            request.finish()
-            return
-
-        state = state.decode("utf-8")
-        code = code.decode("utf-8")
-
-        # Validate state (CSRF protection)
-        state_data = _oidc_state_store.pop(state, None)
-        if not state_data:
-            logger.warning("Invalid or expired OIDC state")
-            request.setResponseCode(400)
-            request.write(b"Invalid or expired state parameter")
-            request.finish()
-            return
-
-        redirect_uri = state_data["redirect_uri"]
-        return_to = state_data["return_to"]
-
-        try:
-            # Exchange code for tokens
-            token_response = await auth.exchange_code_for_token(code, redirect_uri)
-            access_token = token_response.get("access_token")
-
-            if not access_token:
-                raise auth.OIDCError("No access token in response")
-
-            # Fetch user info
-            user_info = await auth.get_user_info(access_token)
-            username = user_info.get("nickname") or user_info.get("sub")
-            groups = user_info.get("groups", [])
-
-            logger.info(f"User {username} authenticated with groups: {groups}")
-
-            # Create session for any authenticated user (admin_groups checked per-endpoint)
-            session_id = await auth.create_session(username, groups)
-
-            # Set session cookie
-            # Use secure=False for development (localhost), True for production
-            is_secure = (
-                request.isSecure() or request.getHeader("X-Forwarded-Proto") == "https"
-            )
-            auth.set_session_cookie(request, session_id, secure=is_secure)
-
-            # Redirect to original destination (same-origin relative path only)
-            request.redirect(
-                _safe_return_to(return_to, default="/status.html").encode()
-            )
-            request.finish()
-
-        except auth.OIDCError as e:
-            logger.error(f"OIDC error during callback: {e}")
-            request.setResponseCode(500)
-            request.write(b"Authentication failed. Please try again.")
-            request.finish()
-
-        except Exception:
-            logger.exception("Unexpected error during OIDC callback")
-            request.setResponseCode(500)
-            request.write(b"An unexpected error occurred")
-            request.finish()
-
-
-class LogoutResource(Resource):
-    """
-    LogoutResource
-
-    Destroys the user's session and clears the session cookie.
-    """
-
-    isLeaf = True
-
-    def _done(self, request, data):
-        pass
-
-    def _failed(self, request, failure):
-        logger.error(f"Logout failed: {failure}")
-        if not request.finished:
-            request.setResponseCode(500)
-            request.write(b"Logout failed")
-            request.finish()
-
-    def render_GET(self, request):
-        deferred = Deferred.fromFuture(
-            asyncio.ensure_future(self._handle_logout(request))
+    # Validate state (CSRF protection)
+    state_data = _oidc_state_store.pop(state, None)
+    if not state_data:
+        logger.warning("Invalid or expired OIDC state")
+        raise HTTPException(
+            status_code=400, detail="Invalid or expired state parameter"
         )
-        deferred.addCallback(lambda data: self._done(request, data))
-        deferred.addErrback(lambda failure: self._failed(request, failure))
-        return NOT_DONE_YET
 
-    async def _handle_logout(self, request):
-        session_id = auth.get_session_cookie(request)
-        if session_id:
-            await auth.delete_session(session_id)
+    redirect_uri = state_data["redirect_uri"]
+    return_to = state_data["return_to"]
 
-        auth.clear_session_cookie(request)
+    try:
+        # Exchange code for tokens
+        token_response = await auth.exchange_code_for_token(code, redirect_uri)
+        access_token = token_response.get("access_token")
 
-        # Redirect to home or a logout confirmation page
-        return_to = _safe_return_to(
-            request.args.get(b"return_to", [b"/"])[0], default="/"
+        if not access_token:
+            raise auth.OIDCError("No access token in response")
+
+        # Fetch user info
+        user_info = await auth.get_user_info(access_token)
+        username = user_info.get("nickname") or user_info.get("sub")
+        groups = user_info.get("groups", [])
+
+        logger.info(f"User {username} authenticated with groups: {groups}")
+
+        # Create session for any authenticated user (admin_groups checked per-endpoint)
+        session_id = await auth.create_session(username, groups)
+
+        # Use secure=False for development (localhost), True for production
+        is_secure = (
+            request.url.scheme == "https"
+            or request.headers.get("X-Forwarded-Proto") == "https"
         )
-        request.redirect(return_to.encode())
-        request.finish()
+
+        # Redirect to original destination (same-origin relative path only)
+        response = RedirectResponse(
+            _safe_return_to(return_to, default="/status.html"), status_code=307
+        )
+        auth.set_session_cookie(response, session_id, secure=is_secure)
+        return response
+
+    except auth.OIDCError as e:
+        logger.error(f"OIDC error during callback: {e}")
+        raise HTTPException(
+            status_code=500, detail="Authentication failed. Please try again."
+        ) from e
+    except Exception:
+        logger.exception("Unexpected error during OIDC callback")
+        raise HTTPException(
+            status_code=500, detail="An unexpected error occurred"
+        ) from None
 
 
-def setup_web_resources():
+@app.get("/logout")
+async def logout(request: Request):
+    """Destroy the user's session and clear the session cookie."""
+    session_id = auth.get_session_cookie(request)
+    if session_id:
+        await auth.delete_session(session_id)
+
+    # Redirect to home or a logout confirmation page
+    return_to = _safe_return_to(request.query_params.get("return_to", "/"), default="/")
+    response = RedirectResponse(return_to, status_code=307)
+    auth.clear_session_cookie(response)
+    return response
+
+
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
+    name="static",
+)
+
+
+def create_app() -> FastAPI:
+    """Return the FastAPI application, marking the web layer as started."""
     global started
-    root = RootResource()
-    root.putChild(b"startup", StartupResource())
-    root.putChild(b"alive", LivenessResource())
-    root.putChild(b"loglevel", LogLevelResource())
-    root.putChild(b"control", ControlResource())
-    root.putChild(b"status.json", StatusJSONResource())
-    root.putChild(b"status.html", StatusPageResource())
-    root.putChild(b"status", Redirect(b"status.html"))
-    root.putChild(
-        b"static",
-        File(os.path.join(os.path.dirname(__file__), "static")),
-    )
-    root.putChild(b"trigger", TriggerBuildResource())
-
-    # OpenID Connect authentication endpoints
-    root.putChild(b"login", LoginResource())
-    root.putChild(b"logout", LogoutResource())
-    root.putChild(b"oidc", OIDCContainerResource())
-
     started = True
+    return app
 
-    return Site(root)
+
+async def start_web_server(asgi_app: FastAPI, port: int = 8080):
+    """Run the ASGI app on the existing shared asyncio event loop.
+
+    Deliberately does not use uvicorn.run(), which creates and owns its own
+    event loop -- that would conflict with the already-running
+    AsyncioSelectorReactor loop. Instead, construct and run the server object
+    directly inside the existing loop, as a background task.
+    """
+    uvicorn_config = uvicorn.Config(
+        asgi_app, host="0.0.0.0", port=port, log_config=None
+    )
+    server = uvicorn.Server(uvicorn_config)
+    return asyncio.create_task(server.serve())

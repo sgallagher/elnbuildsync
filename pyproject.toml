@@ -9,7 +9,7 @@ description = "A tool to automatically rebuild Fedora Rawhide packages for Fedor
 
 readme = "README.md"
 
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -53,3 +53,9 @@ per-file-ignores = { "elnbuildsync/__init__.py" = ["E402"] }
 
 [tool.ruff.lint.isort]
 known-first-party = ["elnbuildsync"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection pattern relies on calling Depends(...) (and
+# similar) in argument defaults; that's not the mutable-default footgun B008
+# looks for.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Body"]
