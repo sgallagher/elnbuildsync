@@ -12,6 +12,7 @@ RUN INSTALL_PKGS=" \
     krb5-workstation \
     python3-cachetools \
     python3-click \
+    python3-fastapi \
     python3-GitPython \
     python3-gssapi \
     python3-httpx \
@@ -23,6 +24,7 @@ RUN INSTALL_PKGS=" \
     python3-sqlalchemy+postgresql_asyncpg \
     python3-tenacity \
     python3-twisted \
+    python3-uvicorn \
     python3-virtualenv \
     " && \
     dnf -y --setopt=tsflags=nodocs install $INSTALL_PKGS && \
