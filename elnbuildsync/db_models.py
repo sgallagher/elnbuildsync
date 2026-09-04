@@ -27,7 +27,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.pool import NullPool
 
 from . import config
-from .decorators import as_deferred
 
 async_session: async_sessionmaker[AsyncSession]
 
@@ -106,7 +105,6 @@ class DBFailedBuilds(Base):
     url: Mapped[str] = mapped_column(nullable=False, unique=True, index=True)
 
 
-@as_deferred
 async def find_failed_build_urls(urls: list[str]) -> set[str]:
     """
     Return SCM URLs from ``urls`` that exist in the failed_builds denylist.
@@ -131,7 +129,6 @@ async def find_failed_build_urls(urls: list[str]) -> set[str]:
     return failed_urls
 
 
-@as_deferred
 async def record_failed_build_urls(urls: list[str], created_at: datetime) -> None:
     """
     Record SCM URLs in the failed_builds denylist.
@@ -158,7 +155,6 @@ async def record_failed_build_urls(urls: list[str], created_at: datetime) -> Non
         await session.commit()
 
 
-@as_deferred
 async def init_db(db_url, echo=False):
     global async_session
 

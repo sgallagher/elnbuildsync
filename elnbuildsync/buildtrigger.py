@@ -27,7 +27,6 @@ from sqlalchemy.sql.expression import select
 from elnbuildsync.kojihelpers.connection import call_koji
 
 from . import config, db_models, kojihelpers
-from .decorators import as_deferred
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +57,6 @@ class BuildTrigger:
             return None
         return self._db_obj.id
 
-    @as_deferred
     async def async_init(self):
         async with db_models.async_session() as session:
             db_build_trigger = db_models.DBBuildTrigger(
@@ -72,7 +70,7 @@ class BuildTrigger:
 
         return self
 
-    async def _mark_completed_impl(self) -> None:
+    async def mark_completed(self) -> None:
         if self._db_obj is None:
             return
         try:
@@ -85,9 +83,7 @@ class BuildTrigger:
         except StaleDataError:
             self._db_obj = None
 
-    async def _complete_and_log_impl(
-        self, reason: str, *, level: int = logging.INFO
-    ) -> None:
+    async def complete_and_log(self, reason: str, *, level: int = logging.INFO) -> None:
         """Log why a trigger is being skipped, then mark it completed."""
         logger.log(
             level,
@@ -96,17 +92,7 @@ class BuildTrigger:
             self.build_id,
             reason,
         )
-        await self._mark_completed_impl()
-
-    @as_deferred
-    async def complete_and_log(self, reason: str, *, level: int = logging.INFO) -> None:
-        """
-        Log and mark a trigger completed from a plain asyncio context.
-
-        When already inside an @as_deferred coroutine, call
-        ``_complete_and_log_impl`` instead to avoid nested Deferred bridges.
-        """
-        await self._complete_and_log_impl(reason, level=level)
+        await self.mark_completed()
 
     async def get_scmurl(self):
         """Get the SCMURL that the build was created from
@@ -134,7 +120,6 @@ class BuildTrigger:
         return self.scmurl
 
     @staticmethod
-    @as_deferred
     async def get_unprocessed_build_triggers():
         build_triggers = dict[str, BuildTrigger]()
         to_drop = list[BuildTrigger]()
@@ -165,13 +150,9 @@ class BuildTrigger:
         # does not imply the build succeeded—only that EBS will not process this
         # trigger again.
         for build_trigger in to_drop:
-            await build_trigger._complete_and_log_impl(
+            await build_trigger.complete_and_log(
                 f"Superseded by newer unprocessed trigger for component "
                 f"{build_trigger.component}"
             )
 
         return list(build_triggers.values())
-
-    @as_deferred
-    async def mark_completed(self):
-        await self._mark_completed_impl()
