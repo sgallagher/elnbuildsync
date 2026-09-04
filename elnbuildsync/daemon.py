@@ -18,6 +18,7 @@
 
 # Reactor bootstrap lives in elnbuildsync/__init__.py (package entrypoint).
 
+import asyncio
 import importlib.metadata
 import logging
 import sys
@@ -186,19 +187,23 @@ def main(
         dynamic_config_url, dynamic_config_file
     )
 
-    # task.react()/Deferred.fromCoroutine() is the one remaining irreducible
-    # Twisted dependency in this codebase: fedora_messaging.api.twisted_consume()
-    # (below, in _main()) requires a live Twisted reactor because its AMQP
-    # transport is built on pika's Twisted adapter. Everything else in the
-    # process runs on plain asyncio primitives sharing that same reactor's
-    # event loop (see elnbuildsync/__init__.py's AsyncioSelectorReactor
-    # install). Do not try to replace this with asyncio.run(): switching
+    # task.react() is the one remaining irreducible Twisted dependency in
+    # this codebase: fedora_messaging.api.twisted_consume() (below, in
+    # _main()) requires a live Twisted reactor because its AMQP transport is
+    # built on pika's Twisted adapter. Everything else in the process runs
+    # on plain asyncio primitives sharing that same reactor's event loop
+    # (see elnbuildsync/__init__.py's AsyncioSelectorReactor install). Do
+    # not try to replace this with asyncio.run(): switching to
     # fedora_messaging.api.consume() (its blocking, non-Twisted-reactor-facing
     # sibling) was investigated and rejected, since it just hides a second
     # Twisted reactor behind crochet, running in its own thread.
     logger.debug("Starting Twisted mainloop")
-    return task.react(
-        lambda _reactor: Deferred.fromCoroutine(
+
+    def _run(reactor):
+        # Schedule _main() as a genuine asyncio.Task via asyncio.ensure_future()
+        # and bridge *that* to a Deferred with Deferred.fromFuture(), allowing
+        # us to run both Twisted and asyncio code in the same event loop.
+        main_task = asyncio.ensure_future(
             _main(
                 db_pw_file,
                 smtp_pw_file,
@@ -211,7 +216,9 @@ def main(
                 krb5_keytab_principal,
             )
         )
-    )
+        return Deferred.fromFuture(main_task)
+
+    return task.react(_run)
 
 
 async def _main(
