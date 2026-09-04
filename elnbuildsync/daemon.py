@@ -198,9 +198,8 @@ def main(
     # Twisted reactor behind crochet, running in its own thread.
     logger.debug("Starting Twisted mainloop")
     return task.react(
-        lambda reactor: Deferred.fromCoroutine(
+        lambda _reactor: Deferred.fromCoroutine(
             _main(
-                reactor,
                 db_pw_file,
                 smtp_pw_file,
                 static_config_file,
@@ -216,7 +215,6 @@ def main(
 
 
 async def _main(
-    reactor,
     db_pw_file,
     smtp_pw_file,
     static_config_file,
@@ -310,7 +308,8 @@ async def _main(
         fedora_messaging.api.twisted_consume(listener.message_handler)
 
         logger.info("Starting HTTP server")
-        reactor.listenTCP(8080, web.setup_web_resources())
+        web.app = web.create_app()
+        await web.start_web_server(web.app, port=8080)
         logger.info("HTTP server ready")
 
         await config.terminator
