@@ -6,7 +6,6 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from twisted.internet.defer import succeed
 
 from elnbuildsync.email import Email
 
@@ -19,10 +18,6 @@ MINIMAL_EMAIL_CFG = {
 }
 
 
-def _defer_immediately(f, *args, **kwargs):
-    return succeed(f(*args, **kwargs))
-
-
 @pytest.mark.asyncio
 async def test_send_email_uses_smtplib():
     mock_smtp = MagicMock()
@@ -30,10 +25,10 @@ async def test_send_email_uses_smtplib():
     mock_ctx.__enter__ = MagicMock(return_value=mock_smtp)
     mock_ctx.__exit__ = MagicMock(return_value=None)
 
-    with (
-        patch("elnbuildsync.email.smtplib.SMTP", return_value=mock_ctx),
-        patch("elnbuildsync.email.deferToThread", side_effect=_defer_immediately),
-    ):
+    # asyncio.to_thread() runs _send_smtp_sync() in a real worker thread; no
+    # patching of it is needed for that to work under pytest-asyncio, since
+    # only smtplib.SMTP (invoked from that thread) touches the network.
+    with patch("elnbuildsync.email.smtplib.SMTP", return_value=mock_ctx):
         client = Email(MINIMAL_EMAIL_CFG, "secret")
         await client.send_email("Subj", "body text", None)
 
@@ -49,10 +44,7 @@ async def test_send_email_skips_login_when_no_password():
     mock_ctx.__enter__ = MagicMock(return_value=mock_smtp)
     mock_ctx.__exit__ = MagicMock(return_value=None)
 
-    with (
-        patch("elnbuildsync.email.smtplib.SMTP", return_value=mock_ctx),
-        patch("elnbuildsync.email.deferToThread", side_effect=_defer_immediately),
-    ):
+    with patch("elnbuildsync.email.smtplib.SMTP", return_value=mock_ctx):
         client = Email(MINIMAL_EMAIL_CFG, "")
         await client.send_email("Subj", "body")
 
@@ -66,10 +58,7 @@ async def test_send_email_includes_custom_headers():
     mock_ctx.__enter__ = MagicMock(return_value=mock_smtp)
     mock_ctx.__exit__ = MagicMock(return_value=None)
 
-    with (
-        patch("elnbuildsync.email.smtplib.SMTP", return_value=mock_ctx),
-        patch("elnbuildsync.email.deferToThread", side_effect=_defer_immediately),
-    ):
+    with patch("elnbuildsync.email.smtplib.SMTP", return_value=mock_ctx):
         client = Email(MINIMAL_EMAIL_CFG, "secret")
         await client.send_email(
             "Subj",

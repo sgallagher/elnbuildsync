@@ -22,8 +22,8 @@ import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
-import requests.exceptions
 from tenacity import stop_after_attempt, wait_fixed
 
 import elnbuildsync.config as config_mod
@@ -689,9 +689,14 @@ configuration:
 """
 
 
-async def _fake_defer_to_thread(fn, *args, **kwargs):
-    """Run fn synchronously and return result; used so config loaders work under asyncio."""
-    return fn(*args, **kwargs)
+def _mock_httpx_client(get_mock):
+    """Build a MagicMock standing in for an `async with httpx.AsyncClient() as
+    client:` block, with ``client.get`` replaced by ``get_mock``."""
+    client = MagicMock()
+    client.get = get_mock
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    return client
 
 
 def _write_temp_file(content, suffix=""):
@@ -715,14 +720,6 @@ class TestLoadConfig:
         )
         try:
             with (
-                patch(
-                    "elnbuildsync.utils.deferToThread",
-                    side_effect=_fake_defer_to_thread,
-                ),
-                patch(
-                    "elnbuildsync.config.dynamic.deferToThread",
-                    side_effect=_fake_defer_to_thread,
-                ),
                 patch(
                     "elnbuildsync.config.get_rawhide_tag", new_callable=AsyncMock
                 ) as mock_rawhide,
@@ -758,15 +755,11 @@ class TestLoadConfig:
         static_path = _write_temp_file(MINIMAL_STATIC_CONFIG_OIDC_YAML, suffix=".yaml")
         secret_path = _write_temp_file("oidc-secret-value\n")
         try:
-            with patch(
-                "elnbuildsync.utils.deferToThread",
-                side_effect=_fake_defer_to_thread,
-            ):
-                await load_static_config(
-                    static_path,
-                    db_pw="testpw",
-                    oidc_client_secret_file=secret_path,
-                )
+            await load_static_config(
+                static_path,
+                db_pw="testpw",
+                oidc_client_secret_file=secret_path,
+            )
             assert config_mod.main["open_id_connect"]["client_secret"] == (
                 "oidc-secret-value"
             )
@@ -778,13 +771,7 @@ class TestLoadConfig:
     async def test_load_static_config_oidc_enabled_missing_secret_file_raises(self):
         static_path = _write_temp_file(MINIMAL_STATIC_CONFIG_OIDC_YAML, suffix=".yaml")
         try:
-            with (
-                patch(
-                    "elnbuildsync.utils.deferToThread",
-                    side_effect=_fake_defer_to_thread,
-                ),
-                pytest.raises(ConfigError, match="Could not read OIDC client secret"),
-            ):
+            with pytest.raises(ConfigError, match="Could not read OIDC client secret"):
                 await load_static_config(
                     static_path,
                     db_pw="testpw",
@@ -798,13 +785,7 @@ class TestLoadConfig:
         static_path = _write_temp_file(MINIMAL_STATIC_CONFIG_OIDC_YAML, suffix=".yaml")
         secret_path = _write_temp_file("\n")
         try:
-            with (
-                patch(
-                    "elnbuildsync.utils.deferToThread",
-                    side_effect=_fake_defer_to_thread,
-                ),
-                pytest.raises(ConfigError, match="is empty"),
-            ):
+            with pytest.raises(ConfigError, match="is empty"):
                 await load_static_config(
                     static_path,
                     db_pw="testpw",
@@ -818,15 +799,11 @@ class TestLoadConfig:
     async def test_load_static_config_oidc_disabled_ignores_secret_file(self):
         static_path = _write_temp_file(MINIMAL_STATIC_CONFIG_YAML, suffix=".yaml")
         try:
-            with patch(
-                "elnbuildsync.utils.deferToThread",
-                side_effect=_fake_defer_to_thread,
-            ):
-                await load_static_config(
-                    static_path,
-                    db_pw="testpw",
-                    oidc_client_secret_file="/nonexistent/oidc_secret",
-                )
+            await load_static_config(
+                static_path,
+                db_pw="testpw",
+                oidc_client_secret_file="/nonexistent/oidc_secret",
+            )
             assert config_mod.main["open_id_connect"] is None
         finally:
             os.unlink(static_path)
@@ -839,14 +816,6 @@ class TestLoadConfig:
         try:
             config_mod.emailer = None
             with (
-                patch(
-                    "elnbuildsync.utils.deferToThread",
-                    side_effect=_fake_defer_to_thread,
-                ),
-                patch(
-                    "elnbuildsync.config.dynamic.deferToThread",
-                    side_effect=_fake_defer_to_thread,
-                ),
                 patch("elnbuildsync.config.get_rawhide_tag", new_callable=AsyncMock),
                 patch(
                     "elnbuildsync.config.get_distro_packages",
@@ -882,21 +851,12 @@ class TestLoadConfig:
             bodhi_response.text = _bodhi_releases_json("f41")
             bodhi_response.raise_for_status = MagicMock()
             mock_get = AsyncMock(return_value=bodhi_response)
-            mock_session = MagicMock()
-            mock_session.get = mock_get
-            mock_session.__enter__ = MagicMock(return_value=mock_session)
-            mock_session.__exit__ = MagicMock(return_value=False)
+            mock_client = _mock_httpx_client(mock_get)
 
             with (
                 patch(
-                    "elnbuildsync.utils.deferToThread",
-                    side_effect=_fake_defer_to_thread,
+                    "elnbuildsync.config.httpx.AsyncClient", return_value=mock_client
                 ),
-                patch(
-                    "elnbuildsync.config.dynamic.deferToThread",
-                    side_effect=_fake_defer_to_thread,
-                ),
-                patch("elnbuildsync.config.Session", return_value=mock_session),
                 patch(
                     "elnbuildsync.config.get_distro_packages",
                     new_callable=AsyncMock,
@@ -921,13 +881,7 @@ class TestLoadConfig:
             f.write("not: valid: yaml: [")
             path = f.name
         try:
-            with (
-                patch(
-                    "elnbuildsync.utils.deferToThread",
-                    side_effect=_fake_defer_to_thread,
-                ),
-                pytest.raises(ConfigError, match="Could not parse"),
-            ):
+            with pytest.raises(ConfigError, match="Could not parse"):
                 await load_dynamic_config(dynamic_config_file=path)
         finally:
             os.unlink(path)
@@ -944,18 +898,8 @@ configuration:
             f.write(yaml_no_components)
             path = f.name
         try:
-            with (
-                patch(
-                    "elnbuildsync.utils.deferToThread",
-                    side_effect=_fake_defer_to_thread,
-                ),
-                patch(
-                    "elnbuildsync.config.dynamic.deferToThread",
-                    side_effect=_fake_defer_to_thread,
-                ),
-                pytest.raises(
-                    ConfigError, match="required components block is missing"
-                ),
+            with pytest.raises(
+                ConfigError, match="required components block is missing"
             ):
                 await load_dynamic_config(dynamic_config_file=path)
         finally:
@@ -1056,13 +1000,21 @@ class TestIsDebug:
             config_mod.logger.setLevel(original)
 
 
+def _mock_git_subprocess(stdout: bytes):
+    """Build a mock asyncio.create_subprocess_exec() replacement for
+    elnbuildsync.config._git_ls_remote(), so tests never fork a real git
+    process."""
+    mock_process = MagicMock()
+    mock_process.communicate = AsyncMock(return_value=(stdout, b""))
+    return AsyncMock(return_value=mock_process)
+
+
 class TestGetConfigRef:
     @pytest.mark.asyncio
     async def test_returns_ref_when_output(self):
         with patch(
-            "elnbuildsync.config.twisted.internet.utils.getProcessOutput",
-            new_callable=AsyncMock,
-            return_value=b"abc123\trefs/heads/main",
+            "elnbuildsync.config.asyncio.create_subprocess_exec",
+            _mock_git_subprocess(b"abc123\trefs/heads/main"),
         ):
             ref = await get_config_ref("https://git.example.com/repo#main")
             assert ref == b"abc123"
@@ -1071,9 +1023,8 @@ class TestGetConfigRef:
     async def test_unknown_ref_raises(self):
         with (
             patch(
-                "elnbuildsync.config.twisted.internet.utils.getProcessOutput",
-                new_callable=AsyncMock,
-                return_value=b"",
+                "elnbuildsync.config.asyncio.create_subprocess_exec",
+                _mock_git_subprocess(b""),
             ),
             pytest.raises(UnknownRefError, match="not found"),
         ):
@@ -1393,12 +1344,9 @@ class TestGetRawhideTag:
         mock_response.raise_for_status = MagicMock()
 
         mock_get = AsyncMock(return_value=mock_response)
-        mock_session = MagicMock()
-        mock_session.get = mock_get
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_client = _mock_httpx_client(mock_get)
 
-        with patch("elnbuildsync.config.Session", return_value=mock_session):
+        with patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client):
             tag = await get_rawhide_tag()
         assert tag == "f41"
         mock_get.assert_called_once()
@@ -1421,14 +1369,11 @@ class TestGetRawhideTag:
         mock_response.raise_for_status = MagicMock()
 
         mock_get = AsyncMock(return_value=mock_response)
-        mock_session = MagicMock()
-        mock_session.get = mock_get
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_client = _mock_httpx_client(mock_get)
 
         get_tag = _get_rawhide_tag_impl()
         with (
-            patch("elnbuildsync.config.Session", return_value=mock_session),
+            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="no valid Fedora rawhide release"),
         ):
             await get_tag()
@@ -1440,14 +1385,11 @@ class TestGetRawhideTag:
         mock_response.raise_for_status = MagicMock()
 
         mock_get = AsyncMock(return_value=mock_response)
-        mock_session = MagicMock()
-        mock_session.get = mock_get
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_client = _mock_httpx_client(mock_get)
 
         get_tag = _get_rawhide_tag_impl()
         with (
-            patch("elnbuildsync.config.Session", return_value=mock_session),
+            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="Could not parse JSON from Bodhi"),
         ):
             await get_tag()
@@ -1456,35 +1398,27 @@ class TestGetRawhideTag:
     async def test_raises_on_http_error(self):
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock(
-            side_effect=requests.exceptions.HTTPError("404")
+            side_effect=httpx.HTTPError("404")
         )
 
         mock_get = AsyncMock(return_value=mock_response)
-        mock_session = MagicMock()
-        mock_session.get = mock_get
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_client = _mock_httpx_client(mock_get)
 
         get_tag = _get_rawhide_tag_impl()
         with (
-            patch("elnbuildsync.config.Session", return_value=mock_session),
+            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="HTTP Error"),
         ):
             await get_tag()
 
     @pytest.mark.asyncio
     async def test_raises_on_request_exception(self):
-        mock_get = AsyncMock(
-            side_effect=requests.exceptions.ConnectionError("connection reset")
-        )
-        mock_session = MagicMock()
-        mock_session.get = mock_get
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_get = AsyncMock(side_effect=httpx.ConnectError("connection reset"))
+        mock_client = _mock_httpx_client(mock_get)
 
         get_tag = _get_rawhide_tag_impl()
         with (
-            patch("elnbuildsync.config.Session", return_value=mock_session),
+            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="HTTP Error"),
         ):
             await get_tag()
@@ -1511,12 +1445,9 @@ class TestGetDistroPackages:
         mock_response.raise_for_status = MagicMock()
 
         mock_get = AsyncMock(return_value=mock_response)
-        mock_session = MagicMock()
-        mock_session.get = mock_get
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_client = _mock_httpx_client(mock_get)
 
-        with patch("elnbuildsync.config.Session", return_value=mock_session):
+        with patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client):
             packages = await get_distro_packages(
                 distro_url="https://example.test",
                 distro_view=["eln"],
@@ -1537,18 +1468,15 @@ class TestGetDistroPackages:
     async def test_raises_on_http_error(self):
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock(
-            side_effect=requests.exceptions.HTTPError("404")
+            side_effect=httpx.HTTPError("404")
         )
 
         mock_get = AsyncMock(return_value=mock_response)
-        mock_session = MagicMock()
-        mock_session.get = mock_get
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_client = _mock_httpx_client(mock_get)
 
         get_packages = _get_distro_packages_impl()
         with (
-            patch("elnbuildsync.config.Session", return_value=mock_session),
+            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="HTTP Error"),
         ):
             await get_packages(
@@ -1559,15 +1487,12 @@ class TestGetDistroPackages:
 
     @pytest.mark.asyncio
     async def test_raises_on_request_exception(self):
-        mock_get = AsyncMock(side_effect=requests.exceptions.Timeout("timed out"))
-        mock_session = MagicMock()
-        mock_session.get = mock_get
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_get = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+        mock_client = _mock_httpx_client(mock_get)
 
         get_packages = _get_distro_packages_impl()
         with (
-            patch("elnbuildsync.config.Session", return_value=mock_session),
+            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="HTTP Error"),
         ):
             await get_packages(
@@ -1584,17 +1509,14 @@ class TestGetDistroPackages:
 
         mock_get = AsyncMock(
             side_effect=[
-                requests.exceptions.ConnectionError("connection refused"),
+                httpx.ConnectError("connection refused"),
                 mock_response,
             ]
         )
-        mock_session = MagicMock()
-        mock_session.get = mock_get
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_client = _mock_httpx_client(mock_get)
 
         with (
-            patch("elnbuildsync.config.Session", return_value=mock_session),
+            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
             packages = await get_distro_packages(
@@ -1608,16 +1530,11 @@ class TestGetDistroPackages:
 
     @pytest.mark.asyncio
     async def test_retries_exhausted_on_connection_error(self):
-        mock_get = AsyncMock(
-            side_effect=requests.exceptions.ConnectionError("connection refused")
-        )
-        mock_session = MagicMock()
-        mock_session.get = mock_get
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+        mock_client = _mock_httpx_client(mock_get)
 
         with (
-            patch("elnbuildsync.config.Session", return_value=mock_session),
+            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
             patch("asyncio.sleep", new_callable=AsyncMock),
             patch.object(get_distro_packages.retry, "stop", stop_after_attempt(3)),
             patch.object(get_distro_packages.retry, "wait", wait_fixed(0)),

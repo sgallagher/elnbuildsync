@@ -7,14 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from requests.exceptions import HTTPError
-from twisted.internet.defer import succeed
 
 from elnbuildsync.kojihelpers import connection as conn
 from elnbuildsync.kojihelpers.errors import KerberosAuthError
-
-
-def _defer_immediately(f, *args, **kwargs):
-    return succeed(f(*args, **kwargs))
 
 
 @pytest.fixture(autouse=True)
@@ -235,10 +230,6 @@ class TestEnsureTgt:
                 return_value=conn.TGT_RENEW_THRESHOLD_SECONDS,
             ),
             patch.object(conn, "_renew_tgt_and_bsys_once") as renew,
-            patch(
-                "elnbuildsync.kojihelpers.connection.deferToThread",
-                side_effect=_defer_immediately,
-            ),
         ):
             await conn._ensure_tgt()
         renew.assert_not_called()
@@ -248,10 +239,6 @@ class TestEnsureTgt:
         with (
             patch.object(conn, "_tgt_lifetime_seconds") as lifetime,
             patch.object(conn, "_renew_tgt_and_bsys_once") as renew,
-            patch(
-                "elnbuildsync.kojihelpers.connection.deferToThread",
-                side_effect=_defer_immediately,
-            ),
         ):
             await conn._ensure_tgt()
         lifetime.assert_not_called()
@@ -262,10 +249,6 @@ class TestEnsureTgt:
         with (
             patch.object(conn, "_tgt_lifetime_seconds", return_value=60),
             patch.object(conn, "_renew_tgt_and_bsys_once") as renew,
-            patch(
-                "elnbuildsync.kojihelpers.connection.deferToThread",
-                side_effect=_defer_immediately,
-            ),
         ):
             await conn._ensure_tgt()
         renew.assert_called_once()
@@ -275,10 +258,6 @@ class TestEnsureTgt:
         with (
             patch.object(conn, "_tgt_lifetime_seconds", return_value=60),
             patch.object(conn, "_renew_tgt_and_bsys_once") as renew,
-            patch(
-                "elnbuildsync.kojihelpers.connection.deferToThread",
-                side_effect=_defer_immediately,
-            ),
         ):
             await conn._ensure_tgt()
         renew.assert_not_called()
@@ -287,10 +266,6 @@ class TestEnsureTgt:
         conn.configure_kerberos(keytab_file=None)
         with (
             patch.object(conn, "_tgt_lifetime_seconds", return_value=0),
-            patch(
-                "elnbuildsync.kojihelpers.connection.deferToThread",
-                side_effect=_defer_immediately,
-            ),
             pytest.raises(KerberosAuthError, match="No Kerberos TGT available"),
         ):
             await conn._ensure_tgt()
@@ -306,10 +281,6 @@ class TestEnsureTgt:
                 "_renew_tgt_and_bsys_once",
                 side_effect=KerberosAuthError("renew failed"),
             ),
-            patch(
-                "elnbuildsync.kojihelpers.connection.deferToThread",
-                side_effect=_defer_immediately,
-            ),
             patch.object(conn.logger, "exception") as log_exc,
         ):
             await conn._ensure_tgt()
@@ -321,10 +292,6 @@ class TestEnsureTgt:
         with (
             patch.object(conn, "_tgt_lifetime_seconds", return_value=0),
             patch.object(conn, "_renew_tgt_and_bsys_with_retries") as retries,
-            patch(
-                "elnbuildsync.kojihelpers.connection.deferToThread",
-                side_effect=_defer_immediately,
-            ),
         ):
             await conn._ensure_tgt()
         retries.assert_called_once()
@@ -337,10 +304,6 @@ class TestEnsureTgt:
                 conn,
                 "_renew_tgt_and_bsys_with_retries",
                 side_effect=KerberosAuthError("no ticket"),
-            ),
-            patch(
-                "elnbuildsync.kojihelpers.connection.deferToThread",
-                side_effect=_defer_immediately,
             ),
             pytest.raises(KerberosAuthError, match="no ticket"),
         ):
@@ -390,10 +353,6 @@ async def test_call_koji_string_method():
     with (
         patch.object(conn, "_ensure_tgt"),
         patch.object(conn, "_ensure_logged_in_sync"),
-        patch(
-            "elnbuildsync.kojihelpers.connection.deferToThread",
-            side_effect=_defer_immediately,
-        ),
     ):
         result = await conn._call_koji_once("listTagged", "tag", latest=True)
 
@@ -414,10 +373,6 @@ async def test_call_koji_callable_receives_bsys():
     with (
         patch.object(conn, "_ensure_tgt"),
         patch.object(conn, "_ensure_logged_in_sync"),
-        patch(
-            "elnbuildsync.kojihelpers.connection.deferToThread",
-            side_effect=_defer_immediately,
-        ),
     ):
         result = await conn._call_koji_once(helper, "mytag", [1, 2])
 
@@ -436,11 +391,6 @@ async def test_call_koji_does_not_retry_auth_or_403():
             "_invoke_koji_sync",
             side_effect=KerberosAuthError("auth boom"),
         ) as invoke,
-        patch(
-            "elnbuildsync.kojihelpers.connection.deferToThread",
-            side_effect=_defer_immediately,
-        ),
-        patch.object(conn, "_reactor_sleep", return_value=succeed(None)),
         pytest.raises(KerberosAuthError, match="auth boom"),
     ):
         await conn.call_koji("listTagged", "tag")
@@ -451,11 +401,6 @@ async def test_call_koji_does_not_retry_auth_or_403():
     with (
         patch.object(conn, "_ensure_tgt"),
         patch.object(conn, "_invoke_koji_sync", side_effect=err_403) as invoke403,
-        patch(
-            "elnbuildsync.kojihelpers.connection.deferToThread",
-            side_effect=_defer_immediately,
-        ),
-        patch.object(conn, "_reactor_sleep", return_value=succeed(None)),
         pytest.raises(HTTPError),
     ):
         await conn.call_koji("listTagged", "tag")
