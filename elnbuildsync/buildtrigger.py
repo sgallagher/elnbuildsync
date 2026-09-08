@@ -18,7 +18,7 @@
 
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import koji
 from sqlalchemy.orm.exc import StaleDataError
@@ -78,7 +78,7 @@ class BuildTrigger:
                 db_obj = await session.merge(self._db_obj)
                 if db_obj.completed_at is not None:
                     return
-                db_obj.completed_at = datetime.now(timezone.utc)
+                db_obj.completed_at = datetime.now(UTC)
                 await session.commit()
         except StaleDataError:
             self._db_obj = None

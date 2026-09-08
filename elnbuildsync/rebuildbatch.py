@@ -24,7 +24,7 @@ import logging
 import os
 from collections import defaultdict
 from collections.abc import Generator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.error import URLError
 from urllib.parse import urlparse
 
@@ -229,9 +229,7 @@ class RebuildBatch:
             all_failures.extend(failed_requests)
 
         if all_failures:
-            await db_models.record_failed_build_urls(
-                all_failures, datetime.now(timezone.utc)
-            )
+            await db_models.record_failed_build_urls(all_failures, datetime.now(UTC))
 
         # Email notification of failures
         if all_failures and config.emailer is not None:

@@ -21,7 +21,7 @@ import logging
 import os
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum, auto
 
 import koji
@@ -91,7 +91,7 @@ async def create_status_page():
 
         # Start preparing the raw data
         _status_data = defaultdict(lambda: None)
-        _status_data["__updated"] = datetime.now(timezone.utc)
+        _status_data["__updated"] = datetime.now(UTC)
 
         # Get the list of packages that EBS has built. Only get the latest build for each
         # package name.

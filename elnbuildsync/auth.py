@@ -43,7 +43,7 @@ from __future__ import annotations
 import base64
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
@@ -231,13 +231,13 @@ async def create_session(username: str, groups: list) -> str:
         The session ID to be stored in a cookie
     """
     session_id = generate_session_id()
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=SESSION_DURATION_HOURS)
+    expires_at = datetime.now(UTC) + timedelta(hours=SESSION_DURATION_HOURS)
 
     db_session = db_models.DBUserSession(
         session_id=session_id,
         username=username,
         groups=groups,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         expires_at=expires_at,
     )
 
@@ -275,7 +275,7 @@ async def validate_session(session_id: str) -> dict | None:
             return None
 
         # Check if session has expired
-        if datetime.now(timezone.utc) > db_session.expires_at:
+        if datetime.now(UTC) > db_session.expires_at:
             logger.debug(f"Session expired for user {db_session.username}")
             # Clean up expired session
             await session.delete(db_session)
@@ -322,7 +322,7 @@ async def cleanup_expired_sessions() -> int:
     async with db_models.async_session() as session:
         result = await session.execute(
             delete(db_models.DBUserSession).where(
-                db_models.DBUserSession.expires_at < datetime.now(timezone.utc)
+                db_models.DBUserSession.expires_at < datetime.now(UTC)
             )
         )
         await session.commit()

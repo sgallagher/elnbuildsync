@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import JSON, DateTime, select
 from sqlalchemy.dialects.postgresql import insert
@@ -33,7 +33,7 @@ async_session: async_sessionmaker[AsyncSession]
 
 def _utc_now():
     """Return current UTC time as timezone-aware datetime (for DB defaults)."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
