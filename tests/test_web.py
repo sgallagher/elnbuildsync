@@ -13,6 +13,7 @@ so nothing here touches a real network or database.
 
 import asyncio
 import logging
+import time
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -519,11 +520,49 @@ async def test_oidc_callback_invalid_state(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_oidc_callback_expired_state_rejected(client, monkeypatch):
+    """A state left over past its TTL (e.g. an abandoned login) must be
+    rejected, not just entries missing outright, and must be removed from
+    the store so it can't be reused."""
+    _enable_auth(monkeypatch)
+    web._oidc_state_store["stale"] = {
+        "redirect_uri": "https://ebs.example.com/oidc/callback",
+        "return_to": "/status.html",
+        "created_at": time.monotonic() - web._OIDC_STATE_TTL_SECONDS - 1,
+    }
+
+    r = await client.get("/oidc/callback?code=abc&state=stale")
+
+    assert r.status_code == 400
+    assert "stale" not in web._oidc_state_store
+
+
+@pytest.mark.asyncio
+async def test_login_purges_expired_states(client, monkeypatch):
+    """/login must not let abandoned state tokens accumulate forever: an
+    expired entry should be dropped the next time a new one is created."""
+    _enable_auth(monkeypatch)
+    web._oidc_state_store["stale"] = {
+        "redirect_uri": "https://ebs.example.com/oidc/callback",
+        "return_to": "/status.html",
+        "created_at": time.monotonic() - web._OIDC_STATE_TTL_SECONDS - 1,
+    }
+
+    r = await client.get("/login", follow_redirects=False)
+
+    assert r.status_code == 307
+    assert "stale" not in web._oidc_state_store
+    # Only the freshly-created state should remain.
+    assert len(web._oidc_state_store) == 1
+
+
+@pytest.mark.asyncio
 async def test_oidc_callback_success(client, monkeypatch):
     _enable_auth(monkeypatch)
     web._oidc_state_store["mystate"] = {
         "redirect_uri": "https://ebs.example.com/oidc/callback",
         "return_to": "/status.html",
+        "created_at": time.monotonic(),
     }
 
     with (
@@ -557,6 +596,7 @@ async def test_oidc_callback_oidc_error(client, monkeypatch):
     web._oidc_state_store["mystate"] = {
         "redirect_uri": "https://ebs.example.com/oidc/callback",
         "return_to": "/status.html",
+        "created_at": time.monotonic(),
     }
 
     with patch(

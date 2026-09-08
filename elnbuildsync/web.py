@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import secrets
+import time
 from string import Template
 from urllib.parse import quote, urlparse
 
@@ -43,8 +44,31 @@ from . import auth, batching, config, status
 logger = logging.getLogger(__name__)
 
 # Store OIDC state tokens temporarily (in production, consider using Redis/DB)
-# Maps state -> {"redirect_uri": str, "return_to": str}
+# Maps state -> {"redirect_uri": str, "return_to": str, "created_at": float}
 _oidc_state_store = {}
+
+# How long an OIDC state token may sit unused before it's considered
+# abandoned. Generous relative to a normal login flow, but bounds how long
+# a state from a user who never completes the flow (closes the tab, etc.)
+# can keep _oidc_state_store growing.
+_OIDC_STATE_TTL_SECONDS = 600
+
+
+def _purge_expired_oidc_states() -> None:
+    """Drop any _oidc_state_store entries older than _OIDC_STATE_TTL_SECONDS.
+
+    Called on every new /login so abandoned state tokens get cleaned up
+    incrementally instead of accumulating forever (they're otherwise only
+    ever removed by a matching /oidc/callback).
+    """
+    now = time.monotonic()
+    expired = [
+        state
+        for state, data in _oidc_state_store.items()
+        if now - data["created_at"] > _OIDC_STATE_TTL_SECONDS
+    ]
+    for state in expired:
+        del _oidc_state_store[state]
 
 
 # Globals
@@ -595,9 +619,11 @@ async def login(request: Request):
 
     # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
+    _purge_expired_oidc_states()
     _oidc_state_store[state] = {
         "redirect_uri": redirect_uri,
         "return_to": return_to,
+        "created_at": time.monotonic(),
     }
 
     # Build and redirect to authorization URL
@@ -631,7 +657,9 @@ async def oidc_callback(request: Request):
 
     # Validate state (CSRF protection)
     state_data = _oidc_state_store.pop(state, None)
-    if not state_data:
+    if not state_data or (
+        time.monotonic() - state_data["created_at"] > _OIDC_STATE_TTL_SECONDS
+    ):
         logger.warning("Invalid or expired OIDC state")
         raise HTTPException(
             status_code=400, detail="Invalid or expired state parameter"
