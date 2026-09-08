@@ -263,6 +263,51 @@ async def test_trigger_post_bad_content_type(client):
 
 
 @pytest.mark.asyncio
+async def test_trigger_post_wrong_media_type_rejected(client):
+    r = await client.post(
+        "/trigger", content=b"[]", headers={"Content-Type": "text/plain"}
+    )
+    assert r.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_trigger_post_content_type_with_charset_param_accepted(client):
+    """``application/json; charset=utf-8`` is a valid JSON content type
+    (RFC 9110 section 8.3): only the media type should be checked, not the
+    verbatim header value.
+    """
+    with patch(
+        "elnbuildsync.web.batching.rebuild_from_components", new=AsyncMock()
+    ) as mock_rebuild:
+        r = await client.post(
+            "/trigger",
+            content=b'["glibc"]',
+            headers={"Content-Type": "application/json; charset=utf-8"},
+        )
+        await asyncio.sleep(0)
+
+    assert r.status_code == 200
+    mock_rebuild.assert_awaited_once_with(["glibc"])
+
+
+@pytest.mark.asyncio
+async def test_trigger_post_content_type_case_insensitive(client):
+    """Media types are case-insensitive per RFC 9110 section 8.3.1."""
+    with patch(
+        "elnbuildsync.web.batching.rebuild_from_components", new=AsyncMock()
+    ) as mock_rebuild:
+        r = await client.post(
+            "/trigger",
+            content=b'["glibc"]',
+            headers={"Content-Type": "Application/JSON"},
+        )
+        await asyncio.sleep(0)
+
+    assert r.status_code == 200
+    mock_rebuild.assert_awaited_once_with(["glibc"])
+
+
+@pytest.mark.asyncio
 async def test_trigger_post_bad_json(client):
     r = await client.post(
         "/trigger", content=b"not json", headers={"Content-Type": "application/json"}

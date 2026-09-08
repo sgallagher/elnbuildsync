@@ -367,8 +367,12 @@ async def trigger_post(request: Request, user: dict = Depends(require_user)):
     if not started or config.is_paused():
         raise HTTPException(status_code=503)
 
-    content_type = request.headers.get("Content-Type")
-    if not content_type or content_type != "application/json":
+    content_type = request.headers.get("Content-Type", "")
+    # Compare only the media type, ignoring any parameters (e.g.
+    # "application/json; charset=utf-8" is a valid JSON content type, per
+    # RFC 9110 section 8.3). Media types are case-insensitive.
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type != "application/json":
         raise HTTPException(status_code=415, detail="Unsupported Content-Type")
 
     body = await request.body()
