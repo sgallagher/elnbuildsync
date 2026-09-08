@@ -386,7 +386,8 @@ async def wait_for_registered_task(
     """
     try:
         return await asyncio.wait_for(future, timeout)
-    except TimeoutError as exc:
+
+    except (TimeoutError, asyncio.CancelledError) as exc:
         # The Future is already done (cancelled by wait_for()); just remove
         # it from active_tasks so check_tasks()/message handlers ignore it.
         _claim_active_task(task_id)
@@ -396,12 +397,17 @@ async def wait_for_registered_task(
         # any failure of its own.
         await kojihelpers.builds.cancel_task(task_id)
 
+        if isinstance(exc, TimeoutError):
+            state = "TIMEOUT"
+        else:
+            state = "FAILED"
+
         err = kojihelpers.errors.TaskTimeoutError()
         err.data = {
             "id": task_id,
             "info": {
                 "request": [None, None, None],
-                "ebs_state": "TIMEOUT",
+                "ebs_state": state,
             },
         }
         raise err from exc
