@@ -53,6 +53,37 @@ alive = True
 # Fully substituted status.html bytes; loaded once at startup.
 status_page_html = None
 
+# Strong references to fire-and-forget background tasks (e.g. the rebuild
+# triggered by trigger_post()). asyncio.create_task() only holds a *weak*
+# reference to the Task via the event loop, so without this a task can be
+# garbage-collected mid-execution. Each task removes itself once done.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _run_in_background(coro, *, on_error_msg: str) -> asyncio.Task:
+    """Schedule ``coro`` as a fire-and-forget task.
+
+    Keeps a strong reference to the task (via ``_background_tasks``) so it
+    isn't garbage-collected before it completes, and logs any exception it
+    raises -- which would otherwise only surface as an easily-missed
+    "Task exception was never retrieved" warning from asyncio itself once
+    the task is garbage-collected.
+    """
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+
+    def _on_done(finished: asyncio.Task) -> None:
+        _background_tasks.discard(finished)
+        try:
+            finished.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception(on_error_msg)
+
+    task.add_done_callback(_on_done)
+    return task
+
 
 def _escape_html(value: str) -> str:
     return html.escape(value, quote=True)
@@ -383,7 +414,13 @@ async def trigger_post(request: Request, user: dict = Depends(require_user)):
         raise HTTPException(status_code=400, detail="Invalid JSON body") from e
 
     # Fire-and-forget: schedule the rebuild on the next loop iteration.
-    asyncio.create_task(batching.rebuild_from_components(components))
+    # rebuild_from_components() already logs its own per-component errors;
+    # this only covers exceptions that escape it entirely (e.g. a Koji
+    # failure before the per-component loop even starts).
+    _run_in_background(
+        batching.rebuild_from_components(components),
+        on_error_msg="Background rebuild task failed",
+    )
 
     lines = [f"User {user['username']} requesting builds of:"]
     lines.extend(str(comp) for comp in sorted(components))

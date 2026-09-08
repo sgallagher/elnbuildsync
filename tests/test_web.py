@@ -12,6 +12,7 @@ so nothing here touches a real network or database.
 """
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -174,6 +175,69 @@ async def test_trigger_post_no_auth_configured(client):
     assert "bash" in r.text
     assert "glibc" in r.text
     mock_rebuild.assert_awaited_once_with(["glibc", "bash"])
+
+
+@pytest.mark.asyncio
+async def test_trigger_post_background_task_tracked_and_cleaned_up(client):
+    """The background rebuild task is kept in a strong-reference set while
+    it's running -- asyncio.create_task() alone only holds a *weak*
+    reference via the event loop, so without this the task could be
+    garbage-collected mid-execution -- and removed once it completes.
+    """
+    release = asyncio.Event()
+
+    async def _slow_rebuild(components):
+        await release.wait()
+
+    with patch("elnbuildsync.web.batching.rebuild_from_components", new=_slow_rebuild):
+        r = await client.post(
+            "/trigger",
+            content=b'["glibc"]',
+            headers={"Content-Type": "application/json"},
+        )
+        await asyncio.sleep(0)
+
+        assert r.status_code == 200
+        assert len(web._background_tasks) == 1
+
+        release.set()
+        # Give the task, and then its done callback, a chance to run.
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    assert web._background_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_trigger_post_background_task_failure_is_logged(client, caplog):
+    """If rebuild_from_components() raises before returning (e.g. a Koji
+    failure before its own per-component try/except loop even starts), the
+    exception must be logged deterministically -- not just surfaced as an
+    easily-missed asyncio "Task exception was never retrieved" warning once
+    the (otherwise unreferenced) task is garbage-collected.
+    """
+
+    async def _failing_rebuild(components):
+        raise RuntimeError("boom")
+
+    with (
+        patch(
+            "elnbuildsync.web.batching.rebuild_from_components", new=_failing_rebuild
+        ),
+        caplog.at_level(logging.ERROR, logger=web.logger.name),
+    ):
+        r = await client.post(
+            "/trigger",
+            content=b'["glibc"]',
+            headers={"Content-Type": "application/json"},
+        )
+        # Give the background task, and then its done callback, a chance to run.
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    assert r.status_code == 200
+    assert "Background rebuild task failed" in caplog.text
+    assert web._background_tasks == set()
 
 
 @pytest.mark.asyncio
