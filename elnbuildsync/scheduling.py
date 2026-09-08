@@ -53,6 +53,13 @@ class PeriodicTask:
         self._interval = None
         self._task = None
         self._sleep_task = None
+        # Set by reset() immediately before it cancels self._sleep_task, so
+        # _sleep() can tell "reset() cancelled just the wait" apart from any
+        # other cancellation of self._sleep_task (namely stop() cancelling
+        # the driver task, which also cancels whatever it's currently
+        # awaiting). stop() clears it so a stop() always wins over a
+        # same-tick reset() that hasn't been observed by _sleep() yet.
+        self._resetting = False
 
     def start(self, interval: float, now: bool = True):
         """Start calling ``coro_func`` every ``interval`` seconds.
@@ -86,15 +93,27 @@ class PeriodicTask:
             await self._sleep()
 
     async def _sleep(self) -> None:
-        self._sleep_task = asyncio.ensure_future(asyncio.sleep(self._interval))
-        try:
-            await self._sleep_task
-        except asyncio.CancelledError:
-            # Triggered by reset(): swallow so the loop continues around to
-            # the next call instead of propagating the cancellation.
-            pass
-        finally:
-            self._sleep_task = None
+        """Sleep for ``self._interval`` seconds.
+
+        If reset() cancels the wait, the interval is restarted from
+        scratch (preserving the lull before the next _coro_func() call)
+        instead of returning early. Any other cancellation - i.e. stop()
+        cancelling the driver task and/or this sleep directly - is a real
+        shutdown request and is left to propagate, so _run()'s loop (and
+        the task driving it) actually terminates.
+        """
+        while True:
+            self._sleep_task = asyncio.ensure_future(asyncio.sleep(self._interval))
+            try:
+                await self._sleep_task
+            except asyncio.CancelledError:
+                if self._resetting:
+                    self._resetting = False
+                    continue
+                raise
+            finally:
+                self._sleep_task = None
+            return
 
     def reset(self) -> None:
         """Cancel the current wait and restart the interval from now.
@@ -104,10 +123,14 @@ class PeriodicTask:
         (e.g. the message-batch "lull timer").
         """
         if self._sleep_task is not None:
+            self._resetting = True
             self._sleep_task.cancel()
 
     def stop(self) -> None:
         """Stop the periodic task."""
+        # A stop() always wins over a same-tick reset() that _sleep()
+        # hasn't observed yet (see the _resetting comment in __init__()).
+        self._resetting = False
         if self._task is not None:
             self._task.cancel()
         if self._sleep_task is not None:
