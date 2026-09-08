@@ -42,18 +42,24 @@ class PendingNVRTags:
         """
         return list(self._data.keys())
 
-    def push(self, tag: str, nvr: str, future: asyncio.Future) -> None:
+    def push(self, tag: str, nvr: str) -> asyncio.Future:
         """
         Store a Future for the given tag and NVR combination.
 
         Args:
             tag: The tag name to watch
             nvr: The NVR to wait for
-            future: The Future to associate with this tag+NVR
+
+        Returns:
+            The Future associated with this tag+NVR
         """
         if tag not in self._data:
             self._data[tag] = {}
-        self._data[tag][nvr] = future
+
+        if nvr not in self._data[tag]:
+            self._data[tag][nvr] = asyncio.get_running_loop().create_future()
+
+        return self._data[tag][nvr]
 
     def pop(self, tag: str, nvr: str) -> asyncio.Future:
         """

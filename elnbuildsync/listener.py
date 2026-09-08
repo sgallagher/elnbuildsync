@@ -430,8 +430,7 @@ def register_nvr_tag(tag: str, nvr: str) -> asyncio.Future:
     """
     logger.debug(f"Registering NVR {nvr} for tag {tag}")
 
-    future = asyncio.get_running_loop().create_future()
-    state.pending_nvr_tags.push(tag, nvr, future)
+    future = state.pending_nvr_tags.push(tag, nvr)
 
     return future
 
