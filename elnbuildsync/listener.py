@@ -351,9 +351,42 @@ async def wait_for_task_id(task_id, timeout: float = config.task_timeout):
             best-effort canceled first.
     """
     future = register_task_id(task_id)
+    return await wait_for_registered_task(task_id, future, timeout)
+
+
+async def wait_for_registered_task(
+    task_id, future: asyncio.Future, timeout: float = config.task_timeout
+):
+    """
+    Wait for a Koji task that has *already* been registered via
+    ``register_task_id()`` to complete.
+
+    Split out of ``wait_for_task_id()`` so that callers waiting on several
+    task IDs at once (e.g. ``kojihelpers.builds.wait_for_tasks()``) can
+    register every Future synchronously, before awaiting any of them. That
+    ordering matters: a completion message for one task can otherwise be
+    delivered (and dropped, since its Future isn't in ``active_tasks`` yet)
+    while a sibling task's Future is still being registered.
+
+    Args:
+        task_id: The Koji task ID being waited on (must already be
+            registered)
+        future: The Future returned by ``register_task_id(task_id)``
+        timeout: Timeout in seconds (defaults to config.task_timeout)
+
+    Returns:
+        The task-completion data (a state-change message body or
+        ``getTaskInfo`` result) once the task finishes.
+
+    Raises:
+        kojihelpers.errors.TaskFailedError: If the task fails or is canceled.
+        kojihelpers.errors.TaskTimeoutError: If the task doesn't complete
+            within ``timeout`` seconds. The underlying Koji task is
+            best-effort canceled first.
+    """
     try:
         return await asyncio.wait_for(future, timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError as exc:
         # The Future is already done (cancelled by wait_for()); just remove
         # it from active_tasks so check_tasks()/message handlers ignore it.
         _claim_active_task(task_id)
@@ -371,7 +404,7 @@ async def wait_for_task_id(task_id, timeout: float = config.task_timeout):
                 "ebs_state": "TIMEOUT",
             },
         }
-        raise err from None
+        raise err from exc
 
 
 def register_nvr_tag(tag: str, nvr: str) -> asyncio.Future:
@@ -410,11 +443,45 @@ async def wait_for_nvr_tag(tag: str, nvr: str, timeout: float = config.tag_timeo
         The NVR, once it has appeared in the tag.
 
     Raises:
-        asyncio.TimeoutError: If the NVR doesn't appear within ``timeout``
-            seconds. There is nothing to cancel for a tag wait, so (unlike
-            wait_for_task_id()) this is not translated into a domain-specific
-            exception; callers that care (e.g. SideTag._prepare()) can
+        kojihelpers.errors.TaskTimeoutError: If the NVR doesn't appear
+            within ``timeout`` seconds. There is nothing to cancel for a
+            tag wait (unlike wait_for_task_id()), so this exception carries
+            no ``.data``; callers that care (e.g. SideTag._prepare()) can
             isinstance-check for it directly.
     """
     future = register_nvr_tag(tag, nvr)
-    return await asyncio.wait_for(future, timeout)
+    return await wait_for_registered_nvr_tag(future, timeout)
+
+
+async def wait_for_registered_nvr_tag(
+    future: asyncio.Future, timeout: float = config.tag_timeout
+):
+    """
+    Wait for an NVR/tag pair that has *already* been registered via
+    ``register_nvr_tag()`` to appear in the tag.
+
+    Split out of ``wait_for_nvr_tag()`` so that callers waiting on several
+    NVRs at once (e.g. ``kojihelpers.tags.wait_for_nvrs_in_tag()``) can
+    register every Future synchronously, before awaiting any of them. That
+    ordering matters: a buildsys.tag message for one NVR can otherwise be
+    delivered (and dropped, since its Future isn't in ``pending_nvr_tags``
+    yet) while a sibling NVR's Future is still being registered.
+
+    Args:
+        future: The Future returned by ``register_nvr_tag(tag, nvr)``
+        timeout: Timeout in seconds (defaults to config.tag_timeout)
+
+    Returns:
+        The NVR, once it has appeared in the tag.
+
+    Raises:
+        kojihelpers.errors.TaskTimeoutError: If the NVR doesn't appear
+            within ``timeout`` seconds. There is nothing to cancel for a
+            tag wait (unlike wait_for_task_id()), so this exception carries
+            no ``.data``; callers that care (e.g. SideTag._prepare()) can
+            isinstance-check for it directly.
+    """
+    try:
+        return await asyncio.wait_for(future, timeout)
+    except TimeoutError as exc:
+        raise kojihelpers.errors.TaskTimeoutError() from exc

@@ -126,8 +126,8 @@ class SideTag:
                 # Drop the partially created side-tag before propagating.
                 await self.remove()
 
-                # Check if the exception is a TimeoutError
-                if isinstance(exc, asyncio.TimeoutError):
+                # Check if the exception is a timeout
+                if isinstance(exc, kojihelpers.errors.TaskTimeoutError):
                     raise SideTagTimeoutError(
                         "Failed to tag builds into side tag"
                     ) from exc
@@ -229,18 +229,28 @@ async def wait_for_nvrs_in_tag(tag, nvrs):
     :params str tag: The tag name to wait for
     :params list nvrs: The list of nvrs to wait for
     :return list: A list of (success, value) results. On failure, ``value`` is
-        the underlying exception (e.g. asyncio.TimeoutError), so callers can
-        isinstance-check timeout errors directly.
+        the underlying exception (e.g. kojihelpers.errors.TaskTimeoutError),
+        so callers can isinstance-check timeout errors directly.
     """
     # Imported lazily to avoid a circular import with listener/batching.
     from .. import listener
 
+    nvrs = list(nvrs)
     logger.info(f"Waiting for {len(nvrs)} nvrs to appear in tag {tag}")
+
+    # Register every (tag, nvr) pair synchronously (no awaits in this loop)
+    # before awaiting any of them. asyncio.gather() only schedules its
+    # coroutines as Tasks; it doesn't run them immediately, so registration
+    # would otherwise happen one NVR at a time as the event loop got around
+    # to each one. A buildsys.tag message for one NVR arriving in that
+    # window would find its Future missing from state.pending_nvr_tags and
+    # be silently dropped, leaving that wait to hang until it times out.
+    futures = [listener.register_nvr_tag(tag, nvr) for nvr in nvrs]
 
     results = await asyncio.gather(
         *(
-            listener.wait_for_nvr_tag(tag, nvr, timeout=config.tag_timeout)
-            for nvr in nvrs
+            listener.wait_for_registered_nvr_tag(future, timeout=config.tag_timeout)
+            for future in futures
         ),
         return_exceptions=True,
     )

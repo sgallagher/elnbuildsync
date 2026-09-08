@@ -132,10 +132,24 @@ async def wait_for_tasks(task_ids, timeout=config.task_timeout):
     # Imported lazily to avoid a circular import with listener/batching.
     from .. import listener
 
+    task_ids = list(task_ids)
     logger.debug(f"Waiting for {len(task_ids)} tasks to complete.")
 
+    # Register every task ID synchronously (no awaits in this loop) before
+    # awaiting any of them. asyncio.gather() only schedules its coroutines
+    # as Tasks; it doesn't run them immediately, so registration would
+    # otherwise happen one task at a time as the event loop got around to
+    # each one. A task-completion message arriving in that window (e.g. one
+    # already queued from a prior, unrelated call_soon) would find its
+    # Future missing from state.active_tasks and be silently dropped,
+    # leaving that wait to hang until it times out.
+    futures = [(task_id, listener.register_task_id(task_id)) for task_id in task_ids]
+
     results = await asyncio.gather(
-        *(listener.wait_for_task_id(task_id, timeout) for task_id in task_ids),
+        *(
+            listener.wait_for_registered_task(task_id, future, timeout)
+            for task_id, future in futures
+        ),
         return_exceptions=True,
     )
     # Mirrors the shape of Twisted's DeferredList(consumeErrors=True): a list
