@@ -65,6 +65,18 @@ jobs:
             " && \
           dnf -y --setopt=tsflags=nodocs install $INSTALL_PKGS && \
           dnf -y clean all --enablerepo='*'
+          # Fedora's system pip refuses to install into system site-packages
+          # (PEP 668). Mirror run.sh's approach: a --system-site-packages
+          # virtualenv still sees the dnf-installed packages above (several
+          # of which, e.g. python3-rpm/python3-krb5/python3-gssapi, aren't
+          # reasonably pip-installable), while letting `pip install -e` work
+          # normally for the project and its test extras.
+          virtualenv --system-site-packages "${GITHUB_WORKSPACE}/.venv"
+          . "${GITHUB_WORKSPACE}/.venv/bin/activate"
           pip install -e ".[test]"
+          # Prepend the venv to PATH for subsequent steps in this job, since
+          # each step runs in its own shell and wouldn't otherwise see the
+          # activation above.
+          echo "${GITHUB_WORKSPACE}/.venv/bin" >> "${GITHUB_PATH}"
       - name: Run integration pytest
         run: pytest tests -m integration
