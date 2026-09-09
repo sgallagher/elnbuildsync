@@ -360,17 +360,44 @@ removed.
    messages arrive on the staging broker, or use `/trigger` (with OIDC if
    configured) to queue specific components.
 
-### Unit tests
+### Running tests
 
-Install test dependencies and run pytest from the repository root:
+The easiest way to run the test suite is with [tox](https://tox.wiki/)
+(see `tox.ini`), which manages the test virtual environments for you:
+
+```bash
+sudo dnf install tox
+tox                 # unit tests, then integration tests
+tox -e unit         # unit tests only; no external services required
+tox -e integration  # end-to-end tests; spins up a disposable Postgres
+                    # container (needs podman or docker on PATH)
+```
+
+Both environments use `sitepackages = true`, so they need the same
+`dnf`-installed system packages as `Dockerfile`/`.github/workflows/*.yml`
+(e.g. `python3-rpm`, `python3-krb5`, `python3-gssapi`, `python3-twisted`,
+`koji`, `bodhi-client`, `fedora-messaging`) -- several of these aren't
+reasonably pip-installable, which is also why the environments aren't
+isolated from the system site-packages. Extra arguments after `--` are
+passed through to `pytest`, e.g. `tox -e unit -- -k test_something -v`.
+
+#### Without tox
+
+You can also install test dependencies and invoke `pytest` directly from
+the repository root:
 
 ```bash
 pip install -e '.[test]'
-pytest
+pytest tests -m "not integration"   # unit tests
+tests/integration/run_local.sh      # integration tests (manages its own
+                                     # disposable Postgres container)
 ```
 
 Configuration parsing tests live in `tests/test_parse_config.py`; other
-modules have targeted tests under `tests/`.
+modules have targeted unit tests under `tests/`. End-to-end tests that
+fake Koji/Bodhi/Fedora Messaging and require a real PostgreSQL database
+live under `tests/integration/` (see `tests/integration/run_local.sh` and
+`.github/workflows/integration.yml`).
 
 ## Production configuration
 

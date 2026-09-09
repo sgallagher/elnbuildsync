@@ -8,4 +8,5 @@ tests/persistent_db
 /tests/etc/custom
 /.cache
 /.local
+/.tox
 
