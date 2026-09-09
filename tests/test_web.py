@@ -380,6 +380,55 @@ async def test_trigger_post_bad_json(client):
     assert r.status_code == 400
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(b'"glibc"', id="string"),
+        pytest.param(b'{"glibc": true}', id="object"),
+        pytest.param(b"42", id="number"),
+        pytest.param(b"null", id="null"),
+        pytest.param(b"true", id="boolean"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_trigger_post_non_list_json_rejected(client, body):
+    """json.loads() accepts any JSON value, but rebuild_from_components()
+    expects a list of component names -- a well-formed but non-list body
+    must be rejected with a 400, not passed through (where it would
+    misbehave silently, e.g. a JSON object iterating its keys, or crash
+    with an unhandled 500, e.g. sorted() on a non-iterable number)."""
+    with patch(
+        "elnbuildsync.web.batching.rebuild_from_components", new=AsyncMock()
+    ) as mock_rebuild:
+        r = await client.post(
+            "/trigger", content=body, headers={"Content-Type": "application/json"}
+        )
+        await asyncio.sleep(0)
+
+    assert r.status_code == 400
+    mock_rebuild.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trigger_post_mixed_string_and_non_string_list_rejected(client):
+    """A list is fine at the top level, but every entry must be a
+    component-name string -- a mix of strings and non-strings (e.g.
+    ["glibc", 42, null]) must be rejected outright, not partially
+    processed."""
+    with patch(
+        "elnbuildsync.web.batching.rebuild_from_components", new=AsyncMock()
+    ) as mock_rebuild:
+        r = await client.post(
+            "/trigger",
+            content=b'["glibc", 42, null, "bash"]',
+            headers={"Content-Type": "application/json"},
+        )
+        await asyncio.sleep(0)
+
+    assert r.status_code == 400
+    mock_rebuild.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_trigger_post_paused(client, monkeypatch):
     monkeypatch.setattr(config, "_pause_override", True)

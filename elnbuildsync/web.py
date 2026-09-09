@@ -437,6 +437,33 @@ async def trigger_post(request: Request, user: dict = Depends(require_user)):
         logger.warning("Invalid JSON in trigger request: %s", e)
         raise HTTPException(status_code=400, detail="Invalid JSON body") from e
 
+    if not isinstance(components, list):
+        # json.loads() happily accepts any JSON value (a string, number,
+        # object, etc.), but rebuild_from_components() below expects an
+        # iterable of component-name strings -- a non-list body would
+        # otherwise misbehave silently (e.g. a JSON object iterates its
+        # keys) or crash with an unhandled 500 (e.g. sorted() on an int).
+        logger.warning(
+            "Trigger request body was valid JSON but not a list: %s",
+            type(components).__name__,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Request body must be a JSON array of component names",
+        )
+
+    if not all(isinstance(c, str) for c in components):
+        # Each entry must be a downstream component name (a string); a
+        # mixed list (e.g. ["glibc", 42]) would otherwise reach
+        # rebuild_from_components() -> config.is_eligible() with a
+        # non-string component, misbehaving in the same ways a wholesale
+        # non-list body would.
+        logger.warning("Trigger request contained non-string component name(s)")
+        raise HTTPException(
+            status_code=400,
+            detail="All entries in the component list must be strings",
+        )
+
     # Fire-and-forget: schedule the rebuild on the next loop iteration.
     # rebuild_from_components() already logs its own per-component errors;
     # this only covers exceptions that escape it entirely (e.g. a Koji
