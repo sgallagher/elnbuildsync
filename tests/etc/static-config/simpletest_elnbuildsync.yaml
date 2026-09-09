@@ -1,0 +1,22 @@
+configuration:
+  koji:
+    profile: koji
+    build_target: eln
+    stable_tag: eln
+    scratch_build: true
+    fail_fast: true
+    username: eln-buildsync
+  bodhi:
+    staging: false
+    batch_size: 750
+  db:
+    host: temp_postgres
+    port: 5432
+    name: elnbuildsync
+    driver: postgresql+asyncpg
+    user: elnbuildsync
+  # OpenID Connect authentication configuration
+  # Uses Fedora tinystage test OIDC server for development/testing
+  # See: https://github.com/fedora-infra/tiny-stage
+  open_id_connect: false
+  email: false

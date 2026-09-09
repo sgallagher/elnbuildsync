@@ -355,7 +355,7 @@ fi
 DEFAULT_STATIC_CONFIG_FILE="tests/etc/static-config/elnbuildsync.yaml"
 DEFAULT_DYNAMIC_CONFIG_FILE="tests/etc/dynamic-config/elnbuildsync_dynamic.yaml"
 DEFAULT_OIDC_CLIENT_SECRET_FILE="tests/etc/secrets/ebs_oidc_client_secret"
-CONTAINER_STATIC_CONFIG="/etc/elnbuildsync/static-config/elnbuildsync.yaml"
+CONTAINER_STATIC_CONFIG="/etc/elnbuildsync/static-config/simpletest_elnbuildsync.yaml"
 CONTAINER_DYNAMIC_CONFIG="/etc/elnbuildsync/dynamic-config/elnbuildsync_dynamic.yaml"
 CONTAINER_OIDC_CLIENT_SECRET="/etc/elnbuildsync/secrets/ebs_oidc_client_secret"
 CUSTOM_MOUNT_ARGS=()
