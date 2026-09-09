@@ -215,6 +215,7 @@ async def check_tasks():
 
     for task in watched_tasks:
         future = None
+        taskinfo = None
         try:
             taskinfo = await call_koji("getTaskInfo", task, request=True)
 
@@ -262,7 +263,19 @@ async def check_tasks():
             if future is None:
                 future = _claim_active_task(task)
             if future is not None:
-                future.cancel()
+                if taskinfo is not None:
+                    fire_task_errback(future, taskinfo)
+                else:
+                    fire_task_errback(
+                        future,
+                        {
+                            "id": task,
+                            "info": {
+                                "request": [None, None, None],
+                                "ebs_state": "FAILED",
+                            },
+                        },
+                    )
 
 
 async def check_tags():
