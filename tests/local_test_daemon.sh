@@ -347,9 +347,9 @@ if [ $db_ready -ne 0 ]; then
 fi
 
 if [ "$_arg_environment" == "stg" ]; then
-    export FEDORA_MESSAGING_CONF="$SCRIPT_DIR/fedora-messaging/fedora.stg.toml"
+    export FEDORA_MESSAGING_CONF="/etc/fedora-messaging/fedora.stg.toml"
 else
-    export FEDORA_MESSAGING_CONF="$SCRIPT_DIR/fedora-messaging/fedora.toml"
+    export FEDORA_MESSAGING_CONF="/etc/fedora-messaging/fedora.toml"
 fi
 
 DEFAULT_STATIC_CONFIG_FILE="tests/etc/static-config/elnbuildsync.yaml"
@@ -403,6 +403,7 @@ ${CONTAINER_ENGINE} run --rm --interactive --tty \
 	--user "$(id -u):$(id -g)" \
 	--security-opt label=disable \
 	--env KRB5CCNAME=KCM: \
+	--env FEDORA_MESSAGING_CONF="${FEDORA_MESSAGING_CONF}" \
 	--volume "/var/run/.heim_org.h5l.kcm-socket:/var/run/.heim_org.h5l.kcm-socket" \
 	--volume "${SCRIPT_DIR}/etc:/etc/elnbuildsync:Z" \
 	--volume "${SCRIPT_DIR}/fedora-messaging:/etc/fedora-messaging:Z" \

@@ -326,7 +326,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 pip install "${SCRIPT_DIR}"
 
-export FEDORA_MESSAGING_CONF=/etc/fedora-messaging/config.toml
+export FEDORA_MESSAGING_CONF="${FEDORA_MESSAGING_CONF:-/etc/fedora-messaging/config.toml}"
 
 # Container runtimes (podman/docker/Kubernetes) send SIGTERM to PID 1 to ask
 # a container to stop. This script is PID 1 (the ENTRYPOINT), so without

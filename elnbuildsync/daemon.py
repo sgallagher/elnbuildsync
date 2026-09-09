@@ -21,6 +21,7 @@
 import asyncio
 import importlib.metadata
 import logging
+import os
 import sys
 import tempfile
 
@@ -312,6 +313,11 @@ async def _main(
         listener.tag_check_processor.start(config.tag_check_timer, now=False)
 
         # Start listening for Fedora Messages
+        logger.info("Starting Fedora Messaging consumer")
+        logger.info(
+            "FEDORA_MESSAGING_CONF: %s",
+            os.environ.get("FEDORA_MESSAGING_CONF", "not set"),
+        )
         fedora_messaging.api.twisted_consume(listener.message_handler)
 
         logger.info("Starting HTTP server")
