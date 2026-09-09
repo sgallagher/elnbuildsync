@@ -56,7 +56,14 @@ class PendingNVRTags:
         if tag not in self._data:
             self._data[tag] = {}
 
-        if nvr not in self._data[tag]:
+        existing = self._data[tag].get(nvr)
+        # A stale entry can be left behind (e.g. a previous wait timed out,
+        # which cancels its Future without removing it here). Reusing a
+        # Future that's already done would make an `await` on it raise
+        # immediately with whatever state it was left in (typically
+        # CancelledError), rather than behaving like a fresh wait, so
+        # create a new one whenever the stored Future is missing or done.
+        if existing is None or existing.done():
             self._data[tag][nvr] = asyncio.get_running_loop().create_future()
 
         return self._data[tag][nvr]

@@ -245,12 +245,14 @@ async def wait_for_nvrs_in_tag(tag, nvrs):
     # to each one. A buildsys.tag message for one NVR arriving in that
     # window would find its Future missing from state.pending_nvr_tags and
     # be silently dropped, leaving that wait to hang until it times out.
-    futures = [listener.register_nvr_tag(tag, nvr) for nvr in nvrs]
+    nvr_futures = {nvr: listener.register_nvr_tag(tag, nvr) for nvr in nvrs}
 
     results = await asyncio.gather(
         *(
-            listener.wait_for_registered_nvr_tag(future, timeout=config.tag_timeout)
-            for future in futures
+            listener.wait_for_registered_nvr_tag(
+                tag, nvr, future, timeout=config.tag_timeout
+            )
+            for nvr, future in nvr_futures.items()
         ),
         return_exceptions=True,
     )

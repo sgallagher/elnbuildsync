@@ -468,11 +468,14 @@ async def wait_for_nvr_tag(tag: str, nvr: str, timeout: float = config.tag_timeo
             isinstance-check for it directly.
     """
     future = register_nvr_tag(tag, nvr)
-    return await wait_for_registered_nvr_tag(future, timeout)
+    return await wait_for_registered_nvr_tag(tag, nvr, future, timeout)
 
 
 async def wait_for_registered_nvr_tag(
-    future: asyncio.Future, timeout: float = config.tag_timeout
+    tag: str,
+    nvr: str,
+    future: asyncio.Future,
+    timeout: float = config.tag_timeout,
 ):
     """
     Wait for an NVR/tag pair that has *already* been registered via
@@ -486,6 +489,8 @@ async def wait_for_registered_nvr_tag(
     yet) while a sibling NVR's Future is still being registered.
 
     Args:
+        tag: The tag name that was passed to ``register_nvr_tag(tag, nvr)``
+        nvr: The NVR that was passed to ``register_nvr_tag(tag, nvr)``
         future: The Future returned by ``register_nvr_tag(tag, nvr)``
         timeout: Timeout in seconds (defaults to config.tag_timeout)
 
@@ -502,4 +507,16 @@ async def wait_for_registered_nvr_tag(
     try:
         return await asyncio.wait_for(future, timeout)
     except TimeoutError as exc:
+        # asyncio.wait_for() already cancelled `future` above, but left it
+        # (now done/cancelled) in state.pending_nvr_tags. Remove it so a
+        # later wait on the same (tag, nvr) pair (e.g. a retried
+        # SideTag/RebuildAttempt) gets a fresh Future via push() instead of
+        # reusing this one -- awaiting an already-cancelled Future raises
+        # immediately, rather than behaving like a real wait.
+        try:
+            state.pending_nvr_tags.pop(tag, nvr)
+        except KeyError:
+            # Already removed, e.g. by check_tags()/a message handler
+            # racing this same timeout; nothing left to clean up.
+            pass
         raise kojihelpers.errors.TaskTimeoutError() from exc
