@@ -55,8 +55,14 @@ async def test_reset_during_sleep_delays_next_call_by_a_full_interval():
         assert called_at - reset_time >= INTERVAL * 0.8
     finally:
         task_runner.stop()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        # Bounded, rather than a plain `await task`: if stop() ever
+        # regresses to not actually terminating the task, this cleanup
+        # must not hang the test suite -- it should just leave the
+        # (still-pending) task alone instead of waiting on it forever.
+        done, pending = await asyncio.wait({task}, timeout=INTERVAL * 5)
+        if done and not pending:
+            with contextlib.suppress(asyncio.CancelledError):
+                task.result()
 
 
 @pytest.mark.asyncio
@@ -73,8 +79,18 @@ async def test_stop_while_sleeping_terminates_the_loop():
     await asyncio.sleep(INTERVAL / 4)
     task_runner.stop()
 
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=INTERVAL * 5)
+    # asyncio.wait_for() would itself cancel `task` on timeout and then
+    # (unboundedly) await it again, which is exactly the kind of hang this
+    # test needs to catch if stop() regresses. asyncio.wait() enforces its
+    # timeout independently of whether the task ever actually finishes.
+    _done, pending = await asyncio.wait({task}, timeout=INTERVAL * 5)
+    assert not pending, "stop() while sleeping did not terminate the task in time"
+
+    # Surface any non-cancellation outcome (an unexpected exception, or a
+    # normal return) with a real traceback rather than a bare assertion
+    # failure.
+    with contextlib.suppress(asyncio.CancelledError):
+        task.result()
 
     assert task.cancelled()
     assert calls == []
