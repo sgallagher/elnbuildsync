@@ -62,6 +62,9 @@ SESSION_DURATION_HOURS = 24
 # Path to CA certificate file for OIDC HTTPS connections (set from --openid-ca-file)
 openid_ca_file = None
 
+# PeriodicTask driving cleanup_expired_sessions(); set by daemon.py's _main().
+session_cleanup_processor = None
+
 
 def _oidc_httpx_client():
     if openid_ca_file:
