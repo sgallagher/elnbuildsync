@@ -35,13 +35,17 @@ changing the test to match broken behavior.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
+from tenacity import stop_after_attempt, wait_none
 
-from elnbuildsync import batching, config, db_models
+from elnbuildsync import batching, config, db_models, listener
+from elnbuildsync import state as ebs_state
+from elnbuildsync.kojihelpers import connection as koji_connection
 
 from .harness import STABLE_TAG
 
@@ -452,3 +456,250 @@ async def test_dynamic_config_resolves_rawhide_trigger_tag(make_harness):
     trigger = await _get_trigger("pkg-l")
     assert trigger.completed_at is None
     assert trigger.build_id == pkg.build_id
+
+
+# ---------------------------------------------------------------------------
+# M - Koji task timeout: cancellation, and the (traced) absence of a retry
+# ---------------------------------------------------------------------------
+#
+# NOTE ON DISCOVERED BEHAVIOR: the requested matrix asked for a test proving
+# that a build-task timeout is canceled *and then retried* (with separate
+# success/failure-by-timeout cases for that second attempt). Tracing the
+# actual code shows this is not what happens:
+#
+#   - listener.wait_for_registered_task() deliberately sets the raised
+#     TaskTimeoutError's `.data["info"]["request"]` to `[None, None, None]`
+#     on a timeout (unlike a real FAILED/CLOSED task, whose request is the
+#     real `[scmurl, target, opts]`).
+#   - RebuildBatchSlice.run()'s retry loop explicitly skips retrying any
+#     failure whose `request[0] is None`, with the comment "If the task
+#     failed due to a timeout, we don't want to retry it."
+#
+# So a single Koji task timeout is - by design - an immediate permanent
+# failure after a best-effort cancellation; there is no second build()
+# attempt whose success/failure could be tested. The two tests below verify
+# that traced behavior instead of the originally-requested (and, per this
+# tracing, not-applicable) retry-after-timeout scenario.
+
+
+async def test_full_rebuild_flow_task_timeout_is_canceled_and_not_retried(make_harness):
+    """Scenario M1: a build task's Koji task never completes (no
+    buildsys.task.state.change is ever delivered for it), so
+    wait_for_registered_task()'s own asyncio.wait_for() times out. Verifies
+    the task is canceled and - per the module note above - the package is
+    permanently failed without a second build() attempt."""
+    harness = await make_harness(
+        packages=["pkg-m1"], skip_tag=["^pkg-m1$"], task_timeout=0.05
+    )
+    pkg = harness.add_package("pkg-m1", build_id=6901, outcomes=["TIMEOUT"])
+
+    await harness.trigger("f44", pkg)
+    await batching.process_message_batch()
+
+    calls = _build_calls_for(harness, pkg.scmurl)
+    assert len(calls) == 1
+    assert calls[0]["task_id"] in harness.koji.cancel_task_calls
+
+    assert harness.bodhi.save_calls == []
+    # The failure's request info is None (see module note), so it's dropped
+    # by db_models.record_failed_build_urls() rather than denylisted.
+    assert await _get_failed_urls() == set()
+
+    trigger = await _get_trigger("pkg-m1")
+    assert trigger.completed_at is not None
+
+
+async def test_full_rebuild_flow_task_timeout_does_not_block_sibling_package(
+    make_harness,
+):
+    """Scenario M2: two packages share a batch - one's build task times out
+    (canceled, permanently failed per Scenario M1) while the other succeeds
+    on the first try. Verifies the timeout doesn't retry-loop or otherwise
+    block/delay its sibling's normal success path through Bodhi."""
+    harness = await make_harness(
+        packages=["pkg-m2-a", "pkg-m2-b"],
+        skip_tag=["^pkg-m2-a$", "^pkg-m2-b$"],
+        task_timeout=0.05,
+    )
+    pkg_a = harness.add_package("pkg-m2-a", build_id=6911, outcomes=["TIMEOUT"])
+    pkg_b = harness.add_package("pkg-m2-b", build_id=6912, outcomes=["CLOSED"])
+
+    await harness.trigger("f44", pkg_a)
+    await harness.trigger("f44", pkg_b)
+    await batching.process_message_batch()
+
+    calls_a = _build_calls_for(harness, pkg_a.scmurl)
+    assert len(calls_a) == 1
+    assert calls_a[0]["task_id"] in harness.koji.cancel_task_calls
+    assert len(_build_calls_for(harness, pkg_b.scmurl)) == 1
+
+    assert len(harness.bodhi.save_calls) == 1
+    delivered = _stable_tag_nvrs(harness)
+    assert harness.koji.nvr_for_scmurl(pkg_b.scmurl) in delivered
+    assert harness.koji.nvr_for_scmurl(pkg_a.scmurl) not in delivered
+
+    for name in ("pkg-m2-a", "pkg-m2-b"):
+        trigger = await _get_trigger(name)
+        assert trigger.completed_at is not None
+
+
+# ---------------------------------------------------------------------------
+# N - Koji task failure recognized via listener.check_tasks() polling
+# ---------------------------------------------------------------------------
+
+
+async def _run_batch_resolving_via_check_tasks(harness, scmurl: str) -> None:
+    """Drive batching.process_message_batch() as a background task, and as
+    soon as the (delivery-suppressed) build task for `scmurl` is registered
+    for waiting, resolve it via a single listener.check_tasks() poll instead
+    of the (suppressed) fedora-messaging message - exercising the polling
+    detection path in check_tasks() rather than _handle_task_state_change().
+    """
+    task = asyncio.ensure_future(batching.process_message_batch())
+    try:
+        for _ in range(100_000):
+            calls = _build_calls_for(harness, scmurl)
+            if (
+                calls
+                and calls[0]["task_id"] in ebs_state.ELNBuildSyncState.active_tasks
+            ):
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError(
+                f"build() for {scmurl!r} never registered a Future to poll"
+            )
+
+        await listener.check_tasks()
+
+        await asyncio.wait_for(task, timeout=5)
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+async def test_full_rebuild_flow_check_tasks_detects_failure_then_retry_succeeds(
+    make_harness,
+):
+    """Scenario N1: the first attempt's build task actually fails, but its
+    buildsys.task.state.change message delivery is suppressed - the failure
+    is only ever recognized via listener.check_tasks() polling getTaskInfo().
+    Verifies the retry (second attempt) still happens and succeeds, proving
+    check_tasks() preserves the real request info needed to retry (unlike a
+    timeout, whose request info is deliberately blanked - see Scenario M)."""
+    harness = await make_harness(packages=["pkg-n1"], skip_tag=["^pkg-n1$"])
+    pkg = harness.add_package("pkg-n1", build_id=7001, outcomes=["FAILED", "CLOSED"])
+    harness.koji.suppress_state_delivery(pkg.scmurl, {0})
+
+    await harness.trigger("f44", pkg)
+    await _run_batch_resolving_via_check_tasks(harness, pkg.scmurl)
+
+    calls = _build_calls_for(harness, pkg.scmurl)
+    assert len(calls) == 2
+
+    assert len(harness.bodhi.save_calls) == 1
+    built_nvr = harness.koji.nvr_for_scmurl(pkg.scmurl)
+    assert built_nvr in _stable_tag_nvrs(harness)
+
+    trigger = await _get_trigger("pkg-n1")
+    assert trigger.completed_at is not None
+
+
+async def test_full_rebuild_flow_check_tasks_detects_failure_then_retry_times_out(
+    make_harness,
+):
+    """Scenario N2: same as N1 (first failure detected via check_tasks()
+    polling, not a message), but the retried second attempt's task times
+    out instead of completing - a permanent failure, combining both
+    mechanisms in one flow."""
+    harness = await make_harness(
+        packages=["pkg-n2"], skip_tag=["^pkg-n2$"], task_timeout=0.05
+    )
+    pkg = harness.add_package("pkg-n2", build_id=7002, outcomes=["FAILED", "TIMEOUT"])
+    harness.koji.suppress_state_delivery(pkg.scmurl, {0})
+
+    await harness.trigger("f44", pkg)
+    await _run_batch_resolving_via_check_tasks(harness, pkg.scmurl)
+
+    calls = _build_calls_for(harness, pkg.scmurl)
+    assert len(calls) == 2
+    assert calls[1]["task_id"] in harness.koji.cancel_task_calls
+
+    assert harness.bodhi.save_calls == []
+
+    trigger = await _get_trigger("pkg-n2")
+    assert trigger.completed_at is not None
+
+
+# ---------------------------------------------------------------------------
+# O - Transient Koji Hub infrastructure error (HTTP 500) on build submission,
+#     exercising kojihelpers.connection.call_koji()'s tenacity retry.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _fast_koji_retry(monkeypatch):
+    """Shrink kojihelpers.connection.call_koji()'s tenacity retry budget so
+    tests exercising it don't have to sleep through real exponential
+    backoff (its normal budget is stop_after_delay(60) with
+    wait_exponential()). Only the retry *timing knobs* are swapped - not the
+    retry-eligibility predicate - so the retry-or-not decision under test is
+    unaffected."""
+    monkeypatch.setattr(koji_connection.call_koji.retry, "wait", wait_none())
+    monkeypatch.setattr(koji_connection.call_koji.retry, "stop", stop_after_attempt(3))
+
+
+async def test_full_rebuild_flow_submission_500_then_retry_succeeds(
+    make_harness, _fast_koji_retry
+):
+    """Scenario O1: build() submission raises an HTTP 500 (simulating a
+    transient Koji Hub infrastructure error) on the first call; verifies
+    call_koji()'s tenacity retry transparently retries the submission, which
+    succeeds the second time, and the rest of the pipeline completes
+    normally."""
+    harness = await make_harness(packages=["pkg-o1"], skip_tag=["^pkg-o1$"])
+    pkg = harness.add_package("pkg-o1", build_id=7101, outcomes=["CLOSED"])
+    harness.koji.script_submission_failures(pkg.scmurl, [500])
+
+    await harness.trigger("f44", pkg)
+    await batching.process_message_batch()
+
+    assert harness.koji.submission_failure_calls == [
+        {"scmurl": pkg.scmurl, "status_code": 500}
+    ]
+    # The failed submission attempt never actually creates a Koji task, so
+    # only the successful retry shows up in build_calls.
+    assert len(_build_calls_for(harness, pkg.scmurl)) == 1
+
+    assert len(harness.bodhi.save_calls) == 1
+    built_nvr = harness.koji.nvr_for_scmurl(pkg.scmurl)
+    assert built_nvr in _stable_tag_nvrs(harness)
+
+    trigger = await _get_trigger("pkg-o1")
+    assert trigger.completed_at is not None
+
+
+async def test_full_rebuild_flow_submission_500_exhausts_retries(
+    make_harness, _fast_koji_retry
+):
+    """Scenario O2: build() submission raises an HTTP 500 on every call,
+    exhausting call_koji()'s tenacity retry budget (shrunk to 3 attempts by
+    _fast_koji_retry). The resulting RequestException propagates out of
+    RebuildBatchSlice.run()/RebuildBatch.run() entirely and is caught by
+    batching.process_message_batch()'s own top-level `except Exception`, so
+    no Koji task is ever created and nothing is submitted to Bodhi - but the
+    build trigger is still (unconditionally) marked completed."""
+    harness = await make_harness(packages=["pkg-o2"], skip_tag=["^pkg-o2$"])
+    pkg = harness.add_package("pkg-o2", build_id=7102, outcomes=["CLOSED"])
+    harness.koji.script_submission_failures(pkg.scmurl, [500] * 10)
+
+    await harness.trigger("f44", pkg)
+    await batching.process_message_batch()
+
+    assert len(harness.koji.submission_failure_calls) == 3
+    assert _build_calls_for(harness, pkg.scmurl) == []
+    assert harness.bodhi.save_calls == []
+    assert await _get_failed_urls() == set()
+
+    trigger = await _get_trigger("pkg-o2")
+    assert trigger.completed_at is not None

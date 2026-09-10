@@ -44,8 +44,10 @@ import asyncio
 import itertools
 import logging
 from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
 
 import koji
+from requests.exceptions import RequestException
 
 from elnbuildsync import state as ebs_state
 
@@ -57,6 +59,20 @@ logger = logging.getLogger(__name__)
 
 class ScriptExhaustedError(AssertionError):
     """Raised when build() is called more times than scripted for a URL."""
+
+
+def _fake_koji_http_error(status_code: int) -> RequestException:
+    """Build a ``requests.exceptions.RequestException`` with a ``.response``
+    good enough for ``_should_retry_koji_exception()`` in
+    ``elnbuildsync/kojihelpers/connection.py`` to make its retry/no-retry
+    decision purely from ``.response.status_code``, simulating a transient
+    Koji Hub infrastructure error (e.g. a 500 from a reverse proxy) on a
+    build() submission call."""
+    response = MagicMock()
+    response.status_code = status_code
+    exc = RequestException(f"Simulated Koji HTTP {status_code} error")
+    exc.response = response
+    return exc
 
 
 class _FakeVirtualCall:
@@ -154,12 +170,36 @@ class FakeKojiClientSession:
         self._next_task_id = itertools.count(1000)
         self._next_side_tag_seq = itertools.count(1)
 
-        # scmurl -> list of scripted outcomes ("CLOSED"/"FAILED"), one
-        # consumed per build() attempt for that URL.
+        # scmurl -> list of scripted outcomes ("CLOSED"/"FAILED"/"TIMEOUT"),
+        # one consumed per build() attempt for that URL. "TIMEOUT" behaves
+        # like a task that never completes: build() records the call (so
+        # scripting/attempt-counting stays uniform) but never schedules a
+        # buildsys.task.state.change delivery, leaving it to genuinely hang
+        # until the real code's own timeout/cancellation logic kicks in.
         self.build_outcomes: dict[str, list[str]] = {}
         self._build_attempt_count: dict[str, int] = {}
         # Every build() call, in order: {"scmurl", "target", "opts", "task_id", "outcome"}
         self.build_calls: list[dict[str, Any]] = []
+
+        # scmurl -> set of (0-based) build_outcomes attempt indices for
+        # which the buildsys.task.state.change delivery should be silently
+        # suppressed, even though the outcome/task_id are otherwise fully
+        # "real" - used to simulate a completion that is only ever observed
+        # via listener.check_tasks() polling (getTaskInfo()), never via a
+        # fedora-messaging message.
+        self._suppressed_state_delivery: dict[str, set[int]] = {}
+
+        # scmurl -> list of scripted build()-*submission*-time outcomes,
+        # consumed one per build() call *before* any build_outcomes/attempt
+        # bookkeeping happens (a submission failure never actually starts a
+        # Koji task). An int entry is an HTTP status code to raise a
+        # RequestException for (simulating a transient Koji Hub
+        # infrastructure error); None means "fall through to the normal
+        # build_outcomes-scripted behavior for this call".
+        self.submission_failure_outcomes: dict[str, list[int | None]] = {}
+        self._submission_attempt_count: dict[str, int] = {}
+        # Every submission-time failure actually raised, in order.
+        self.submission_failure_calls: list[dict[str, Any]] = []
 
         # build_id (int) or nvr (str) -> build-info dict (as getBuild() would return)
         self._builds: dict[int | str, dict[str, Any]] = {}
@@ -228,9 +268,33 @@ class FakeKojiClientSession:
         self._builds.setdefault(nvr, info)
 
     def script_build_outcomes(self, scmurl: str, outcomes: list[str]) -> None:
-        """Configure the sequence of outcomes ("CLOSED"/"FAILED") that
-        build() will return for `scmurl`, one per attempt."""
+        """Configure the sequence of outcomes ("CLOSED"/"FAILED"/"TIMEOUT")
+        that build() will return for `scmurl`, one per attempt."""
         self.build_outcomes[scmurl] = list(outcomes)
+
+    def suppress_state_delivery(self, scmurl: str, attempt_indices) -> None:
+        """Mark specific (0-based) build() attempts for `scmurl` so their
+        buildsys.task.state.change message is never delivered - the task
+        still runs to a real (CLOSED/FAILED) outcome and answers
+        getTaskInfo() normally, but the only way to observe that outcome is
+        via listener.check_tasks() polling, never the message bus."""
+        self._suppressed_state_delivery.setdefault(scmurl, set()).update(
+            attempt_indices
+        )
+
+    def script_submission_failures(
+        self, scmurl: str, outcomes: list[int | None]
+    ) -> None:
+        """Configure the sequence of *submission-time* outcomes for `scmurl`.
+
+        An int entry raises a fake RequestException with that HTTP status
+        code from build() itself (before a Koji task ever exists), to
+        simulate a transient Koji Hub infrastructure error while submitting
+        a build - separate from (and consumed before) the normal
+        `build_outcomes` scripting, which only kicks in once a submission
+        attempt is None/exhausted.
+        """
+        self.submission_failure_outcomes[scmurl] = list(outcomes)
 
     def get_nvrs_in_tag(self, tag: str) -> list[str]:
         return list(self._tag_contents.get(tag, []))
@@ -427,7 +491,14 @@ class FakeKojiClientSession:
     ) -> dict | None:
         for call in self.build_calls:
             if call["task_id"] == task_id:
-                state_name = "CLOSED" if call["outcome"] == "CLOSED" else "FAILED"
+                if call["outcome"] == "CLOSED":
+                    state_name = "CLOSED"
+                elif call["outcome"] == "TIMEOUT":
+                    # Genuinely hung: still running as far as Koji is
+                    # concerned, never CLOSED/FAILED.
+                    state_name = "OPEN"
+                else:
+                    state_name = "FAILED"
                 return {
                     "id": task_id,
                     "state": koji.TASK_STATES[state_name],
@@ -438,6 +509,21 @@ class FakeKojiClientSession:
     def build(
         self, scmurl: str, target: str, opts: dict, priority: int | None = None
     ) -> int:
+        # Submission-time failures (e.g. a transient 500 from Koji Hub) are
+        # checked - and consume their own attempt counter - before any
+        # build_outcomes/attempt-count bookkeeping: a submission failure
+        # means no Koji task was ever created.
+        sub_outcomes = self.submission_failure_outcomes.get(scmurl, [])
+        sub_attempt_index = self._submission_attempt_count.get(scmurl, 0)
+        self._submission_attempt_count[scmurl] = sub_attempt_index + 1
+        if sub_attempt_index < len(sub_outcomes):
+            status_code = sub_outcomes[sub_attempt_index]
+            if status_code is not None:
+                self.submission_failure_calls.append(
+                    {"scmurl": scmurl, "status_code": status_code}
+                )
+                raise _fake_koji_http_error(status_code)
+
         outcomes = self.build_outcomes.get(scmurl)
         if outcomes is None:
             raise AssertionError(f"No scripted build outcome configured for {scmurl!r}")
@@ -467,6 +553,14 @@ class FakeKojiClientSession:
         if outcome == "CLOSED":
             nvr = self._derive_nvr_for_scmurl(scmurl)
             self._task_nvr[task_id] = nvr
+
+        if outcome == "TIMEOUT":
+            # Never completes: no state-change message is ever scheduled.
+            return task_id
+
+        suppressed = attempt_index in self._suppressed_state_delivery.get(scmurl, ())
+        if suppressed:
+            return task_id
 
         body = {
             "id": task_id,
