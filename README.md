@@ -99,7 +99,8 @@ After all slices succeed or exhaust retries:
    tags only the new ELN builds into it (not the Rawhide builds used to
    seed the build side-tag).
 3. `BodhiClient` submits one Bodhi update per errata tag (large batches may
-   be split using `bodhi.batch_size` in configuration).
+   be split using `bodhi.batch_size` in configuration, once the batch
+   exceeds `bodhi.max_single_batch_size`).
 4. EBS waits for builds to appear in the configured `stable_tag`, then
    removes the build side-tag.
 
@@ -188,7 +189,11 @@ Important sections:
 - **`configuration.control`**: `trigger_tag`, `skip_tag`, `exclude`, `ordering`,
   pause flag, status interval (dynamic).
 - **`configuration.bodhi`**: Maximum builds per Bodhi update (`batch_size`;
-  `0` means no splitting).
+  `0` means no splitting). `max_single_batch_size` sets the threshold total
+  build count above which splitting into `batch_size`-sized updates kicks
+  in; if omitted, it defaults to `batch_size` (i.e. splitting starts as soon
+  as there are more builds than fit in one `batch_size`-sized update, the
+  original behavior).
 - **`configuration.db`**: PostgreSQL connection settings (`page_size` also
   bounds batched denylist queries).
 - **`configuration.open_id_connect`**: OIDC settings for `/trigger`

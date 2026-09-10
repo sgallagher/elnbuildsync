@@ -435,6 +435,107 @@ async def test_full_rebuild_flow_splits_bodhi_updates_into_batches(make_harness)
         assert trigger.completed_at is not None
 
 
+async def test_full_rebuild_flow_max_single_batch_size_suppresses_split(
+    make_harness,
+):
+    """Scenario K2: bodhi.batch_size=2 but bodhi.max_single_batch_size=10 -
+    with only three successful builds (well under the threshold), the whole
+    batch is submitted as a single Bodhi update instead of being split into
+    batch_size=2 chunks. This is the decoupling `max_single_batch_size`
+    introduces: batch_size alone (Scenario K) always splits once a batch
+    exceeds it, but pairing it with a higher max_single_batch_size lets small
+    batches through untouched."""
+    harness = await make_harness(
+        packages=["pkg-k2-a", "pkg-k2-b", "pkg-k2-c"],
+        skip_tag=["^pkg-k2-a$", "^pkg-k2-b$", "^pkg-k2-c$"],
+        bodhi_batch_size=2,
+        bodhi_max_single_batch_size=10,
+    )
+    pkg_a = harness.add_package("pkg-k2-a", build_id=6801, outcomes=["CLOSED"])
+    pkg_b = harness.add_package("pkg-k2-b", build_id=6802, outcomes=["CLOSED"])
+    pkg_c = harness.add_package("pkg-k2-c", build_id=6803, outcomes=["CLOSED"])
+
+    await harness.trigger("f44", pkg_a)
+    await harness.trigger("f44", pkg_b)
+    await harness.trigger("f44", pkg_c)
+    await batching.process_message_batch()
+
+    assert len(_build_calls_for(harness, pkg_a.scmurl)) == 1
+    assert len(_build_calls_for(harness, pkg_b.scmurl)) == 1
+    assert len(_build_calls_for(harness, pkg_c.scmurl)) == 1
+
+    # One shared build side-tag, plus a single update-tag (one Bodhi batch,
+    # unlike Scenario K's two).
+    assert len(harness.koji.created_side_tags) == 2
+    build_side_tag, update_tag = harness.koji.created_side_tags
+
+    nvr_a = harness.koji.nvr_for_scmurl(pkg_a.scmurl)
+    nvr_b = harness.koji.nvr_for_scmurl(pkg_b.scmurl)
+    nvr_c = harness.koji.nvr_for_scmurl(pkg_c.scmurl)
+
+    assert set(harness.koji.get_nvrs_in_tag(update_tag)) == {nvr_a, nvr_b, nvr_c}
+
+    assert len(harness.bodhi.save_calls) == 1
+    assert harness.bodhi.save_calls[0]["from_tag"] == update_tag
+
+    assert _stable_tag_nvrs(harness) == {nvr_a, nvr_b, nvr_c}
+
+    assert build_side_tag in harness.koji.removed_side_tags
+    for name in ("pkg-k2-a", "pkg-k2-b", "pkg-k2-c"):
+        trigger = await _get_trigger(name)
+        assert trigger.completed_at is not None
+
+
+async def test_full_rebuild_flow_max_single_batch_size_splits_once_exceeded(
+    make_harness,
+):
+    """Scenario K3: bodhi.batch_size=2, bodhi.max_single_batch_size=2 - with
+    three successful builds (over the threshold), splitting into
+    batch_size=2 chunks kicks back in, same as Scenario K. This confirms
+    max_single_batch_size acts purely as the *threshold* for when to start
+    splitting, while batch_size still controls the resulting chunk size."""
+    harness = await make_harness(
+        packages=["pkg-k3-a", "pkg-k3-b", "pkg-k3-c"],
+        skip_tag=["^pkg-k3-a$", "^pkg-k3-b$", "^pkg-k3-c$"],
+        bodhi_batch_size=2,
+        bodhi_max_single_batch_size=2,
+    )
+    pkg_a = harness.add_package("pkg-k3-a", build_id=6901, outcomes=["CLOSED"])
+    pkg_b = harness.add_package("pkg-k3-b", build_id=6902, outcomes=["CLOSED"])
+    pkg_c = harness.add_package("pkg-k3-c", build_id=6903, outcomes=["CLOSED"])
+
+    await harness.trigger("f44", pkg_a)
+    await harness.trigger("f44", pkg_b)
+    await harness.trigger("f44", pkg_c)
+    await batching.process_message_batch()
+
+    assert len(_build_calls_for(harness, pkg_a.scmurl)) == 1
+    assert len(_build_calls_for(harness, pkg_b.scmurl)) == 1
+    assert len(_build_calls_for(harness, pkg_c.scmurl)) == 1
+
+    # One shared build side-tag, plus two update-tags (one per Bodhi batch).
+    assert len(harness.koji.created_side_tags) == 3
+    build_side_tag, update_tag_1, update_tag_2 = harness.koji.created_side_tags
+
+    nvr_a = harness.koji.nvr_for_scmurl(pkg_a.scmurl)
+    nvr_b = harness.koji.nvr_for_scmurl(pkg_b.scmurl)
+    nvr_c = harness.koji.nvr_for_scmurl(pkg_c.scmurl)
+
+    assert set(harness.koji.get_nvrs_in_tag(update_tag_1)) == {nvr_a, nvr_b}
+    assert set(harness.koji.get_nvrs_in_tag(update_tag_2)) == {nvr_c}
+
+    assert len(harness.bodhi.save_calls) == 2
+    assert harness.bodhi.save_calls[0]["from_tag"] == update_tag_1
+    assert harness.bodhi.save_calls[1]["from_tag"] == update_tag_2
+
+    assert _stable_tag_nvrs(harness) == {nvr_a, nvr_b, nvr_c}
+
+    assert build_side_tag in harness.koji.removed_side_tags
+    for name in ("pkg-k3-a", "pkg-k3-b", "pkg-k3-c"):
+        trigger = await _get_trigger(name)
+        assert trigger.completed_at is not None
+
+
 async def test_dynamic_config_resolves_rawhide_trigger_tag(make_harness):
     """Scenario L: control.trigger_tag: rawhide is dynamically resolved via
     Bodhi's /releases endpoint, and the *resolved* tag (not the literal

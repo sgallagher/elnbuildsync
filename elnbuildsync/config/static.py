@@ -151,13 +151,30 @@ def _parse_koji(cnf_koji, ConfigError):
 
 
 def _parse_bodhi(cnf_bodhi, koji_profile, ConfigError):
-    """Parse bodhi configuration. Returns dict with batch_size and staging."""
+    """Parse bodhi configuration. Returns dict with batch_size,
+    max_single_batch_size, and staging."""
     result = {"batch_size": 0}
     if "batch_size" in cnf_bodhi:
         try:
             result["batch_size"] = int(cnf_bodhi["batch_size"])
         except ValueError:
             raise ConfigError("bodhi.batch_size must be an integer")
+
+    if "max_single_batch_size" in cnf_bodhi:
+        try:
+            result["max_single_batch_size"] = int(cnf_bodhi["max_single_batch_size"])
+        except ValueError:
+            raise ConfigError("bodhi.max_single_batch_size must be an integer")
+    else:
+        # Preserve current behavior when not specified: the threshold above
+        # which updates get split is the same as the size of each split.
+        result["max_single_batch_size"] = result["batch_size"]
+
+    if result["max_single_batch_size"] > 0 and result["batch_size"] == 0:
+        raise ConfigError(
+            "bodhi.max_single_batch_size is set, but bodhi.batch_size is 0 "
+            "(unbounded); there would be no batch size to split into."
+        )
 
     explicit_staging = "staging" in cnf_bodhi
     if explicit_staging:
@@ -191,8 +208,9 @@ def _parse_bodhi(cnf_bodhi, koji_profile, ConfigError):
             )
 
     logger.debug(
-        "Parsed bodhi config: batch_size=%s staging=%s",
+        "Parsed bodhi config: batch_size=%s max_single_batch_size=%s staging=%s",
         result["batch_size"],
+        result["max_single_batch_size"],
         result["staging"],
     )
     return result
