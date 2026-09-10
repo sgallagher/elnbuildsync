@@ -112,16 +112,6 @@ def _start_builds_thread(bsys, target, scm_urls, fail_fast=False):
     return task_index
 
 
-async def wait_for_task(task_id, timeout=config.task_timeout):
-    # Imported lazily to avoid a circular import with listener/batching.
-    from .. import listener
-
-    logger.debug(f"Waiting for {task_id}.")
-
-    # Wait until this task is complete
-    return await listener.wait_for_task_id(task_id, timeout)
-
-
 async def wait_for_tasks(task_ids, timeout=config.task_timeout):
     # Imported lazily to avoid a circular import with listener/batching.
     from .. import listener
