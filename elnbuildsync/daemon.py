@@ -127,11 +127,6 @@ def _resolve_dynamic_source(dynamic_config_url, dynamic_config_file):
     help="CA certificate file for OIDC HTTPS connections",
 )
 @click.option(
-    "--untagging/--no-untagging",
-    default=False,
-    help="Untag all but the most recent builds in the destination target",
-)
-@click.option(
     "--krb5-keytab-file",
     default=None,
     type=click.Path(dir_okay=False),
@@ -160,7 +155,6 @@ def main(
     smtp_pw_file,
     openid_client_secret_file,
     openid_ca_file,
-    untagging,
     krb5_keytab_file,
     krb5_keytab_principal,
 ):
@@ -178,7 +172,6 @@ def main(
     logging.getLogger("tenacity").addHandler(logging.StreamHandler())
 
     config.dry_run = dry_run
-    config.do_untagging = untagging
     config.message_batch_timer = lull_time
 
     if krb5_keytab_principal and not krb5_keytab_file:
