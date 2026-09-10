@@ -22,7 +22,7 @@ import json
 import logging
 import re
 
-import httpx
+import httpx2
 from tenacity import retry as retry_on_exception
 from tenacity import stop_after_delay, wait_exponential
 
@@ -213,9 +213,6 @@ async def _git_ls_remote(*args: str) -> bytes:
         return code (including negative codes produced by signals such as
         SIGSEGV).  The error message includes the return code and any output
         the process produced.
-
-    Tests exercising this (directly or via get_config_ref) must mock
-    ``asyncio.create_subprocess_exec`` rather than actually spawning git.
     """
     try:
         process = await asyncio.create_subprocess_exec(
@@ -329,7 +326,7 @@ async def get_distro_packages(
 
             logger.debug(f"downloading {url}")
 
-            async with httpx.AsyncClient() as client:
+            async with httpx2.AsyncClient() as client:
                 try:
                     r = await client.get(
                         url,
@@ -337,7 +334,7 @@ async def get_distro_packages(
                         timeout=config_fetch_timeout,
                     )
                     r.raise_for_status()
-                except httpx.HTTPError as e:
+                except httpx2.HTTPError as e:
                     raise ConfigError(f"HTTP Error downloading {url}") from e
 
                 for line in r.text.splitlines():
@@ -368,7 +365,7 @@ async def get_rawhide_tag():
 
     # Retrieve the list of "pending" (aka development) releases
     url = "https://bodhi.fedoraproject.org/releases?state=pending"
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         try:
             r = await client.get(
                 url,
@@ -381,7 +378,7 @@ async def get_rawhide_tag():
         except json.decoder.JSONDecodeError as e:
             raise ConfigError("Could not parse JSON from Bodhi releases") from e
 
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             raise ConfigError("HTTP Error") from e
 
     # Get the stable tag corresponding to the rawhide branch

@@ -13,5 +13,5 @@ rpm
 sqlalchemy >= 2
 tenacity >= 8
 twisted >= 22
-httpx
+httpx2
 uvicorn

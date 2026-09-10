@@ -46,7 +46,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
-import httpx
+import httpx2
 from sqlalchemy import delete, select
 from starlette.requests import Request
 from starlette.responses import Response
@@ -68,8 +68,8 @@ session_cleanup_processor = None
 
 def _oidc_httpx_client():
     if openid_ca_file:
-        return httpx.AsyncClient(verify=openid_ca_file)
-    return httpx.AsyncClient()
+        return httpx2.AsyncClient(verify=openid_ca_file)
+    return httpx2.AsyncClient()
 
 
 class AuthError(Exception):
@@ -153,7 +153,7 @@ async def exchange_code_for_token(code: str, redirect_uri: str) -> dict:
             )
             response.raise_for_status()
             return response.json()
-    except httpx.HTTPStatusError as e:
+    except httpx2.HTTPStatusError as e:
         logger.error(f"Token exchange failed: {e}")
         raise OIDCError(f"Failed to exchange authorization code: {e}") from e
     except Exception as e:
@@ -190,7 +190,7 @@ async def get_user_info(access_token: str) -> dict:
             )
             response.raise_for_status()
             return response.json()
-    except httpx.HTTPStatusError as e:
+    except httpx2.HTTPStatusError as e:
         logger.error(f"UserInfo fetch failed: {e}")
         raise OIDCError(f"Failed to fetch user info: {e}") from e
     except Exception as e:

@@ -15,7 +15,7 @@ RUN INSTALL_PKGS=" \
     python3-fastapi \
     python3-GitPython \
     python3-gssapi \
-    python3-httpx \
+    python3-httpx2 \
     python3-krb5 \
     python3-pip \
     python3-pyyaml \
