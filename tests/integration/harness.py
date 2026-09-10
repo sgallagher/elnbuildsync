@@ -160,15 +160,15 @@ async def build_harness(
         tag_timeout: If set, overrides `config.tag_timeout` for this test
             only (monkeypatch restores the original value afterwards).
         task_timeout: If set, overrides the effective Koji task-wait timeout
-            used by `kojihelpers.builds.wait_for_tasks()`/`wait_for_task()`
-            for this test only. Unlike `tag_timeout` (read fresh from
-            `config.tag_timeout` on every call), these two functions declare
-            `timeout=config.task_timeout` as an ordinary *default parameter
-            value*, which Python binds once at import time - long before any
-            test runs - so monkeypatching `config.task_timeout` itself would
-            have no effect here. Patching each function's `__defaults__`
-            tuple directly achieves the same effect a test needs (a short
-            timeout) without changing that behavior.
+            used by `kojihelpers.builds.wait_for_tasks()` for this test only.
+            Unlike `tag_timeout` (read fresh from `config.tag_timeout` on
+            every call), this function declares `timeout=config.task_timeout`
+            as an ordinary *default parameter value*, which Python binds once
+            at import time - long before any test runs - so monkeypatching
+            `config.task_timeout` itself would have no effect here. Patching
+            the function's `__defaults__` tuple directly achieves the same
+            effect a test needs (a short timeout) without changing that
+            behavior.
         emailer: Assigned to `config.emailer` after config load (defaults to
             None, i.e. failure emails are disabled for most scenarios).
         rawhide_releases_body: Canned JSON body for Bodhi's
@@ -237,9 +237,6 @@ async def build_harness(
     if task_timeout is not None:
         monkeypatch.setattr(
             kojihelpers_builds.wait_for_tasks, "__defaults__", (task_timeout,)
-        )
-        monkeypatch.setattr(
-            kojihelpers_builds.wait_for_task, "__defaults__", (task_timeout,)
         )
 
     loop = asyncio.get_running_loop()

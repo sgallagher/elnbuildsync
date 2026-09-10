@@ -355,7 +355,8 @@ class FakeKojiClientSession:
     async def _deliver_task_state(self, task_id: int, body: dict[str, Any]) -> None:
         # Wait until listener.register_task_id() has stored the Future.
         # Registration always happens synchronously before the first await
-        # in wait_for_task_id(), so this converges within a few loop ticks.
+        # in kojihelpers.builds.wait_for_tasks(), so this converges within a
+        # few loop ticks.
         while task_id not in ebs_state.ELNBuildSyncState.active_tasks:
             await asyncio.sleep(0)
         await self._bus.publish_task_state_change(

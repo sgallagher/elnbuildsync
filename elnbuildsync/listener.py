@@ -332,8 +332,7 @@ def register_task_id(task_id) -> asyncio.Future:
 
     Returns an ``asyncio.Future`` that resolves when the task completes, via
     a fedora-messaging state-change message or the periodic check_tasks()
-    poll. Use ``wait_for_task_id()`` for the common case of registering and
-    waiting with a timeout.
+    poll. Use ``wait_for_registered_task()`` to wait on it with a timeout.
     """
     logger.debug(f"Registering task {task_id}")
     if task_id in state.active_tasks:
@@ -345,28 +344,6 @@ def register_task_id(task_id) -> asyncio.Future:
     return future
 
 
-async def wait_for_task_id(task_id, timeout: float = config.task_timeout):
-    """
-    Register a Koji task ID and wait for it to complete.
-
-    Args:
-        task_id: The Koji task ID to wait for
-        timeout: Timeout in seconds (defaults to config.task_timeout)
-
-    Returns:
-        The task-completion data (a state-change message body or
-        ``getTaskInfo`` result) once the task finishes.
-
-    Raises:
-        kojihelpers.errors.TaskFailedError: If the task fails or is canceled.
-        kojihelpers.errors.TaskTimeoutError: If the task doesn't complete
-            within ``timeout`` seconds. The underlying Koji task is
-            best-effort canceled first.
-    """
-    future = register_task_id(task_id)
-    return await wait_for_registered_task(task_id, future, timeout)
-
-
 async def wait_for_registered_task(
     task_id, future: asyncio.Future, timeout: float = config.task_timeout
 ):
@@ -374,12 +351,12 @@ async def wait_for_registered_task(
     Wait for a Koji task that has *already* been registered via
     ``register_task_id()`` to complete.
 
-    Split out of ``wait_for_task_id()`` so that callers waiting on several
-    task IDs at once (e.g. ``kojihelpers.builds.wait_for_tasks()``) can
-    register every Future synchronously, before awaiting any of them. That
-    ordering matters: a completion message for one task can otherwise be
-    delivered (and dropped, since its Future isn't in ``active_tasks`` yet)
-    while a sibling task's Future is still being registered.
+    Split out from registration so that callers waiting on several task IDs
+    at once (e.g. ``kojihelpers.builds.wait_for_tasks()``) can register
+    every Future synchronously, before awaiting any of them. That ordering
+    matters: a completion message for one task can otherwise be delivered
+    (and dropped, since its Future isn't in ``active_tasks`` yet) while a
+    sibling task's Future is still being registered.
 
     Args:
         task_id: The Koji task ID being waited on (must already be
@@ -463,8 +440,8 @@ async def wait_for_nvr_tag(tag: str, nvr: str, timeout: float = config.tag_timeo
     Raises:
         kojihelpers.errors.TaskTimeoutError: If the NVR doesn't appear
             within ``timeout`` seconds. There is nothing to cancel for a
-            tag wait (unlike wait_for_task_id()), so this exception carries
-            no ``.data``; callers that care (e.g. SideTag._prepare()) can
+            tag wait (unlike a task wait), so this exception carries no
+            ``.data``; callers that care (e.g. SideTag._prepare()) can
             isinstance-check for it directly.
     """
     future = register_nvr_tag(tag, nvr)
@@ -500,8 +477,8 @@ async def wait_for_registered_nvr_tag(
     Raises:
         kojihelpers.errors.TaskTimeoutError: If the NVR doesn't appear
             within ``timeout`` seconds. There is nothing to cancel for a
-            tag wait (unlike wait_for_task_id()), so this exception carries
-            no ``.data``; callers that care (e.g. SideTag._prepare()) can
+            tag wait (unlike a task wait), so this exception carries no
+            ``.data``; callers that care (e.g. SideTag._prepare()) can
             isinstance-check for it directly.
     """
     try:
