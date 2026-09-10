@@ -1,6 +1,6 @@
 [project]
 name = "ELNBuildSync"
-version = "2.0.2"
+version = "2.1.0"
 authors  = [
     { name = "Stephen Gallagher", email = "sgallagh@redhat.com" },
 ]
