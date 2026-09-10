@@ -191,18 +191,6 @@ def _tag_builds_thread(bsys, tag, build_ids):
     return task_index
 
 
-async def untag_builds(tag, builds):
-    await call_koji(_untag_builds_thread, tag, builds)
-    logger.debug(f"Untagged {len(builds)} builds from {tag}")
-
-
-def _untag_builds_thread(bsys, tag, build_ids):
-    with bsys.multicall(batch=config.koji_batch) as mc:
-        logger.info(f"Untagging {len(build_ids)} builds from {tag}")
-        for build_id in build_ids:
-            mc.untagBuild(tag, build_id, strict=False)
-
-
 async def get_tags_for_target(target):
     """
     Returns: buildroot_tag, destination_tag

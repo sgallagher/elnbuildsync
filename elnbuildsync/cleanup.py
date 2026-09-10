@@ -19,7 +19,7 @@
 
 import logging
 
-from . import batching, config, kojihelpers
+from . import batching, config
 from .kojihelpers.connection import call_koji
 
 logger = logging.getLogger(__name__)
@@ -40,41 +40,6 @@ async def periodic_cleanup():
     latest_tagged_dest_pkgs = await call_koji(
         "listTagged", config.main["koji"]["stable_tag"], latest=True
     )
-
-    # Get the list of up-to-date packages in the destination tag
-    # Exclude those not in the desired list, so they will be cleaned up below
-    latest_tagged_dest_nvrs = {
-        pkg["nvr"]
-        for pkg in latest_tagged_dest_pkgs
-        if pkg["name"] in desired_pkg_names
-    }
-
-    # Get the complete list of builds tagged into the stable tag
-    all_tagged_dest_pkgs = await call_koji(
-        "listTagged", config.main["koji"]["stable_tag"], latest=False
-    )
-    all_tagged_dest_nvrs = {pkg["nvr"] for pkg in all_tagged_dest_pkgs}
-
-    # Queue up the set of old builds to untag
-    nvrs_to_untag = all_tagged_dest_nvrs - latest_tagged_dest_nvrs
-
-    if len(nvrs_to_untag) > 0:
-        logger.info(f"{len(nvrs_to_untag)} builds to untag:")
-        for nvr in sorted(nvrs_to_untag):
-            logger.info(f"\t{nvr}")
-
-        if config.do_untagging:
-            try:
-                await kojihelpers.tags.untag_builds(
-                    config.main["koji"]["stable_tag"], nvrs_to_untag
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to untag builds from %s; continuing with rebuilds",
-                    config.main["koji"]["stable_tag"],
-                )
-        else:
-            logger.info("Untagging is disabled, skipping untagging.")
 
     # Packages in the desired list but not in the tag should be built
     latest_tagged_dest_pkg_names = {pkg["name"] for pkg in latest_tagged_dest_pkgs}

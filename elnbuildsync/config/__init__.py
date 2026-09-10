@@ -62,7 +62,6 @@ configuration = None
 config_ref = None
 distrogitsync = None
 dry_run = False
-do_untagging = False
 scmurl = None
 main = None
 control = None
