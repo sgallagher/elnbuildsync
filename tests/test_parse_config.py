@@ -1000,13 +1000,77 @@ class TestIsDebug:
             config_mod.logger.setLevel(original)
 
 
-def _mock_git_subprocess(stdout: bytes):
+def _mock_git_subprocess(stdout: bytes, returncode: int = 0):
     """Build a mock asyncio.create_subprocess_exec() replacement for
     elnbuildsync.config._git_ls_remote(), so tests never fork a real git
-    process."""
+    process.
+
+    :param stdout: Bytes the fake process writes to stdout.
+    :param returncode: Exit code the fake process reports (default 0).
+    """
     mock_process = MagicMock()
+    mock_process.returncode = returncode
     mock_process.communicate = AsyncMock(return_value=(stdout, b""))
     return AsyncMock(return_value=mock_process)
+
+
+class TestGitLsRemote:
+    """Unit tests for _git_ls_remote() in isolation."""
+
+    @pytest.mark.asyncio
+    async def test_raises_when_git_binary_missing(self):
+        """OSError from create_subprocess_exec (e.g. missing binary) is
+        re-raised as RuntimeError."""
+        with (
+            patch(
+                "elnbuildsync.config.asyncio.create_subprocess_exec",
+                AsyncMock(side_effect=FileNotFoundError("No such file: /usr/bin/git")),
+            ),
+            pytest.raises(RuntimeError, match="Failed to start git ls-remote"),
+        ):
+            from elnbuildsync.config import _git_ls_remote
+
+            await _git_ls_remote("--branches", "https://git.example.com/repo")
+
+    @pytest.mark.asyncio
+    async def test_raises_on_nonzero_exit_code(self):
+        """A non-zero exit code is raised as RuntimeError containing the code."""
+        with (
+            patch(
+                "elnbuildsync.config.asyncio.create_subprocess_exec",
+                _mock_git_subprocess(b"fatal: repository not found", returncode=128),
+            ),
+            pytest.raises(RuntimeError, match=r"128.*fatal: repository not found"),
+        ):
+            from elnbuildsync.config import _git_ls_remote
+
+            await _git_ls_remote("--branches", "https://git.example.com/repo")
+
+    @pytest.mark.asyncio
+    async def test_raises_on_negative_exit_code(self):
+        """A negative return code (e.g. segfault → -11) is raised as RuntimeError."""
+        with (
+            patch(
+                "elnbuildsync.config.asyncio.create_subprocess_exec",
+                _mock_git_subprocess(b"", returncode=-11),
+            ),
+            pytest.raises(RuntimeError, match="-11"),
+        ):
+            from elnbuildsync.config import _git_ls_remote
+
+            await _git_ls_remote("--branches", "https://git.example.com/repo")
+
+    @pytest.mark.asyncio
+    async def test_returns_stdout_on_success(self):
+        """Returns raw stdout bytes when git exits with code 0."""
+        with patch(
+            "elnbuildsync.config.asyncio.create_subprocess_exec",
+            _mock_git_subprocess(b"abc123\trefs/heads/main"),
+        ):
+            from elnbuildsync.config import _git_ls_remote
+
+            result = await _git_ls_remote("--branches", "https://git.example.com/repo")
+        assert result == b"abc123\trefs/heads/main"
 
 
 class TestGetConfigRef:
@@ -1029,6 +1093,18 @@ class TestGetConfigRef:
             pytest.raises(UnknownRefError, match="not found"),
         ):
             await get_config_ref("https://git.example.com/repo#nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_git_failure_propagates(self):
+        """A RuntimeError from _git_ls_remote propagates out of get_config_ref."""
+        with (
+            patch(
+                "elnbuildsync.config.asyncio.create_subprocess_exec",
+                _mock_git_subprocess(b"fatal: not a git repo", returncode=128),
+            ),
+            pytest.raises(RuntimeError, match="128"),
+        ):
+            await get_config_ref("https://git.example.com/repo#main")
 
 
 class TestIsEligible:

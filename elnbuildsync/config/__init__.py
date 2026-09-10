@@ -206,24 +206,37 @@ def split_module(comp):
 
 
 async def _git_ls_remote(*args: str) -> bytes:
-    """Run ``git ls-remote <args>`` and return combined stdout+stderr bytes.
+    """Run ``git ls-remote <args>`` and return stdout bytes.
 
-    Mirrors the semantics of the previous
-    ``twisted.internet.utils.getProcessOutput(..., errortoo=True)`` call
-    this replaced: the process's exit code is not checked, and stdout/stderr
-    are combined into a single bytes result.
+    :raises RuntimeError: If the ``git`` binary cannot be started (e.g. it is
+        missing or not executable), or if the process exits with a non-zero
+        return code (including negative codes produced by signals such as
+        SIGSEGV).  The error message includes the return code and any output
+        the process produced.
 
     Tests exercising this (directly or via get_config_ref) must mock
     ``asyncio.create_subprocess_exec`` rather than actually spawning git.
     """
-    process = await asyncio.create_subprocess_exec(
-        "/usr/bin/git",
-        "ls-remote",
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "/usr/bin/git",
+            "ls-remote",
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except OSError as exc:
+        raise RuntimeError(f"Failed to start git ls-remote: {exc}") from exc
+
     stdout, _ = await process.communicate()
+
+    if process.returncode != 0:
+        output_text = stdout.decode(errors="replace").strip()
+        raise RuntimeError(
+            f"git ls-remote exited with code {process.returncode}"
+            + (f": {output_text}" if output_text else "")
+        )
+
     return stdout
 
 
