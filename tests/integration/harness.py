@@ -137,6 +137,7 @@ async def build_harness(
     fail_fast: bool = False,
     scratch_build: bool = False,
     bodhi_batch_size: int = 0,
+    bodhi_max_single_batch_size: int | None = None,
     tag_timeout: float | None = None,
     task_timeout: float | None = None,
     emailer: Any = None,
@@ -157,6 +158,9 @@ async def build_harness(
         fail_fast: `koji.fail_fast`.
         scratch_build: `koji.scratch_build`.
         bodhi_batch_size: `bodhi.batch_size`.
+        bodhi_max_single_batch_size: `bodhi.max_single_batch_size`. Omitted
+            from the written config (so it defaults to `bodhi_batch_size`,
+            per `_parse_bodhi()`) unless explicitly set.
         tag_timeout: If set, overrides `config.tag_timeout` for this test
             only (monkeypatch restores the original value afterwards).
         task_timeout: If set, overrides the effective Koji task-wait timeout
@@ -175,6 +179,13 @@ async def build_harness(
             `/releases?state=pending` endpoint, used only when
             `trigger_tag == "rawhide"`.
     """
+    bodhi_config: dict[str, Any] = {
+        "batch_size": bodhi_batch_size,
+        "staging": False,
+    }
+    if bodhi_max_single_batch_size is not None:
+        bodhi_config["max_single_batch_size"] = bodhi_max_single_batch_size
+
     static_config = {
         "configuration": {
             "koji": {
@@ -184,7 +195,7 @@ async def build_harness(
                 "scratch_build": scratch_build,
                 "fail_fast": fail_fast,
             },
-            "bodhi": {"batch_size": bodhi_batch_size, "staging": False},
+            "bodhi": bodhi_config,
             "db": {
                 # Unused: the test harness manages the real test database
                 # directly via db_models.init_db(), not through config.db_url.

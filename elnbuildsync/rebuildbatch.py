@@ -304,7 +304,8 @@ class RebuildBatch:
             build_nvrs: list[str],
         ) -> Generator[list[str], None, None]:
             batch_size = config.main["bodhi"]["batch_size"]
-            if batch_size == 0:
+            max_single_batch_size = config.main["bodhi"]["max_single_batch_size"]
+            if batch_size == 0 or len(build_nvrs) <= max_single_batch_size:
                 yield build_nvrs
                 return
 

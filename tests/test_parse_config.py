@@ -185,6 +185,39 @@ class TestParseBodhi:
         with pytest.raises(ConfigError, match="bodhi.batch_size must be an integer"):
             _parse_bodhi({"batch_size": "not-an-int"}, koji_profile="koji")
 
+    def test_max_single_batch_size_defaults_to_batch_size(self):
+        """When unset, max_single_batch_size mirrors batch_size, preserving
+        the pre-existing splitting behavior."""
+        result = _parse_bodhi({"batch_size": 750}, koji_profile="koji")
+        assert result["max_single_batch_size"] == 750
+
+    def test_max_single_batch_size_defaults_to_zero(self):
+        result = _parse_bodhi({}, koji_profile="koji")
+        assert result["max_single_batch_size"] == 0
+
+    def test_custom_max_single_batch_size(self):
+        result = _parse_bodhi(
+            {"batch_size": 50, "max_single_batch_size": 500}, koji_profile="koji"
+        )
+        assert result["batch_size"] == 50
+        assert result["max_single_batch_size"] == 500
+
+    def test_invalid_max_single_batch_size_raises(self):
+        with pytest.raises(
+            ConfigError, match="bodhi.max_single_batch_size must be an integer"
+        ):
+            _parse_bodhi(
+                {"batch_size": 50, "max_single_batch_size": "not-an-int"},
+                koji_profile="koji",
+            )
+
+    def test_max_single_batch_size_without_batch_size_raises(self):
+        with pytest.raises(
+            ConfigError,
+            match="bodhi.max_single_batch_size is set, but bodhi.batch_size is 0",
+        ):
+            _parse_bodhi({"max_single_batch_size": 500}, koji_profile="koji")
+
     def test_staging_inferred_false_for_koji_profile(self, caplog):
         with caplog.at_level(logging.WARNING):
             result = _parse_bodhi({}, koji_profile="koji")
