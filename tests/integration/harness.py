@@ -113,7 +113,7 @@ class Harness:
 
 
 def _mock_httpx_client(get_mock) -> MagicMock:
-    """Build a MagicMock standing in for an `async with httpx.AsyncClient() as
+    """Build a MagicMock standing in for an `async with httpx2.AsyncClient() as
     client:` block, with ``client.get`` replaced by ``get_mock``.
 
     (Mirrors the identical helper in tests/test_parse_config.py; duplicated
@@ -224,7 +224,8 @@ async def build_harness(
         response.raise_for_status = MagicMock()
         mock_client = _mock_httpx_client(AsyncMock(return_value=response))
         monkeypatch.setattr(
-            "elnbuildsync.config.httpx.AsyncClient", MagicMock(return_value=mock_client)
+            "elnbuildsync.config.httpx2.AsyncClient",
+            MagicMock(return_value=mock_client),
         )
 
     await config.load_dynamic_config(dynamic_config_file=str(dynamic_path))

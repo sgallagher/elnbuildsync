@@ -6,7 +6,7 @@
 """
 Tests for the FastAPI application in elnbuildsync/web.py.
 
-These exercise the ASGI app directly via httpx's ASGITransport, without
+These exercise the ASGI app directly via httpx2's ASGITransport, without
 starting a real TCP listener. auth.*/db_models/kojihelpers calls are mocked
 so nothing here touches a real network or database.
 """
@@ -16,7 +16,7 @@ import logging
 import time
 from unittest.mock import AsyncMock, patch
 
-import httpx
+import httpx2
 import pytest
 
 from elnbuildsync import config, status, web
@@ -46,8 +46,8 @@ def _enable_auth(monkeypatch, admin_groups=None):
 
 @pytest.fixture
 async def client():
-    transport = httpx.ASGITransport(app=web.app)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=web.app)
+    async with httpx2.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as c:
         yield c

@@ -22,7 +22,7 @@ import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
 from tenacity import stop_after_attempt, wait_fixed
 
@@ -690,7 +690,7 @@ configuration:
 
 
 def _mock_httpx_client(get_mock):
-    """Build a MagicMock standing in for an `async with httpx.AsyncClient() as
+    """Build a MagicMock standing in for an `async with httpx2.AsyncClient() as
     client:` block, with ``client.get`` replaced by ``get_mock``."""
     client = MagicMock()
     client.get = get_mock
@@ -855,7 +855,7 @@ class TestLoadConfig:
 
             with (
                 patch(
-                    "elnbuildsync.config.httpx.AsyncClient", return_value=mock_client
+                    "elnbuildsync.config.httpx2.AsyncClient", return_value=mock_client
                 ),
                 patch(
                     "elnbuildsync.config.get_distro_packages",
@@ -1422,7 +1422,7 @@ class TestGetRawhideTag:
         mock_get = AsyncMock(return_value=mock_response)
         mock_client = _mock_httpx_client(mock_get)
 
-        with patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client):
+        with patch("elnbuildsync.config.httpx2.AsyncClient", return_value=mock_client):
             tag = await get_rawhide_tag()
         assert tag == "f41"
         mock_get.assert_called_once()
@@ -1449,7 +1449,7 @@ class TestGetRawhideTag:
 
         get_tag = _get_rawhide_tag_impl()
         with (
-            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
+            patch("elnbuildsync.config.httpx2.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="no valid Fedora rawhide release"),
         ):
             await get_tag()
@@ -1465,7 +1465,7 @@ class TestGetRawhideTag:
 
         get_tag = _get_rawhide_tag_impl()
         with (
-            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
+            patch("elnbuildsync.config.httpx2.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="Could not parse JSON from Bodhi"),
         ):
             await get_tag()
@@ -1473,26 +1473,26 @@ class TestGetRawhideTag:
     @pytest.mark.asyncio
     async def test_raises_on_http_error(self):
         mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock(side_effect=httpx.HTTPError("404"))
+        mock_response.raise_for_status = MagicMock(side_effect=httpx2.HTTPError("404"))
 
         mock_get = AsyncMock(return_value=mock_response)
         mock_client = _mock_httpx_client(mock_get)
 
         get_tag = _get_rawhide_tag_impl()
         with (
-            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
+            patch("elnbuildsync.config.httpx2.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="HTTP Error"),
         ):
             await get_tag()
 
     @pytest.mark.asyncio
     async def test_raises_on_request_exception(self):
-        mock_get = AsyncMock(side_effect=httpx.ConnectError("connection reset"))
+        mock_get = AsyncMock(side_effect=httpx2.ConnectError("connection reset"))
         mock_client = _mock_httpx_client(mock_get)
 
         get_tag = _get_rawhide_tag_impl()
         with (
-            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
+            patch("elnbuildsync.config.httpx2.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="HTTP Error"),
         ):
             await get_tag()
@@ -1521,7 +1521,7 @@ class TestGetDistroPackages:
         mock_get = AsyncMock(return_value=mock_response)
         mock_client = _mock_httpx_client(mock_get)
 
-        with patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client):
+        with patch("elnbuildsync.config.httpx2.AsyncClient", return_value=mock_client):
             packages = await get_distro_packages(
                 distro_url="https://example.test",
                 distro_view=["eln"],
@@ -1541,14 +1541,14 @@ class TestGetDistroPackages:
     @pytest.mark.asyncio
     async def test_raises_on_http_error(self):
         mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock(side_effect=httpx.HTTPError("404"))
+        mock_response.raise_for_status = MagicMock(side_effect=httpx2.HTTPError("404"))
 
         mock_get = AsyncMock(return_value=mock_response)
         mock_client = _mock_httpx_client(mock_get)
 
         get_packages = _get_distro_packages_impl()
         with (
-            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
+            patch("elnbuildsync.config.httpx2.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="HTTP Error"),
         ):
             await get_packages(
@@ -1559,12 +1559,12 @@ class TestGetDistroPackages:
 
     @pytest.mark.asyncio
     async def test_raises_on_request_exception(self):
-        mock_get = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+        mock_get = AsyncMock(side_effect=httpx2.TimeoutException("timed out"))
         mock_client = _mock_httpx_client(mock_get)
 
         get_packages = _get_distro_packages_impl()
         with (
-            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
+            patch("elnbuildsync.config.httpx2.AsyncClient", return_value=mock_client),
             pytest.raises(ConfigError, match="HTTP Error"),
         ):
             await get_packages(
@@ -1581,14 +1581,14 @@ class TestGetDistroPackages:
 
         mock_get = AsyncMock(
             side_effect=[
-                httpx.ConnectError("connection refused"),
+                httpx2.ConnectError("connection refused"),
                 mock_response,
             ]
         )
         mock_client = _mock_httpx_client(mock_get)
 
         with (
-            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
+            patch("elnbuildsync.config.httpx2.AsyncClient", return_value=mock_client),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
             packages = await get_distro_packages(
@@ -1602,11 +1602,11 @@ class TestGetDistroPackages:
 
     @pytest.mark.asyncio
     async def test_retries_exhausted_on_connection_error(self):
-        mock_get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+        mock_get = AsyncMock(side_effect=httpx2.ConnectError("connection refused"))
         mock_client = _mock_httpx_client(mock_get)
 
         with (
-            patch("elnbuildsync.config.httpx.AsyncClient", return_value=mock_client),
+            patch("elnbuildsync.config.httpx2.AsyncClient", return_value=mock_client),
             patch("asyncio.sleep", new_callable=AsyncMock),
             patch.object(get_distro_packages.retry, "stop", stop_after_attempt(3)),
             patch.object(get_distro_packages.retry, "wait", wait_fixed(0)),
