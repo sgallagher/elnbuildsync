@@ -77,12 +77,6 @@ async def get_multi_buildinfo(build_ids, **kwargs):
     return results
 
 
-async def perform_builds(target, scm_urls, fail_fast=False):
-    task_index = await start_builds(target, scm_urls, fail_fast)
-    results = await wait_for_tasks(task_index.values())
-    return results
-
-
 async def start_builds(target, scm_urls, fail_fast=False):
     task_index = await call_koji(_start_builds_thread, target, scm_urls, fail_fast)
     return task_index

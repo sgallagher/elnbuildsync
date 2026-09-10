@@ -296,6 +296,10 @@ async def _main(
         config.cleanup_processor = PeriodicTask(cleanup.periodic_cleanup)
         config.cleanup_processor.start(config.cleanup_timer, now=False)
 
+        # Schedule periodic expired-session cleanup
+        auth.session_cleanup_processor = PeriodicTask(auth.cleanup_expired_sessions)
+        auth.session_cleanup_processor.start(config.session_cleanup_timer, now=False)
+
         # Add a five-minute timer to check for task completion, because Koji
         # does not always send out an AMQP message as expected
         listener.task_check_processor = PeriodicTask(listener.check_tasks)

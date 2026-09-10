@@ -48,6 +48,7 @@ db_url = None
 # Configuration options
 config_timer = 15 * 60  # 15 minutes
 cleanup_timer = 12 * 60 * 60  # 12 hours
+session_cleanup_timer = 24 * 60 * 60  # 24 hours
 task_check_timer = 5 * 60  # 5 minutes
 tag_check_timer = 5 * 60  # 5 minutes
 task_timeout = 24 * 60 * 60  # 24 hours
