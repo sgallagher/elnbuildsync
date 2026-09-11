@@ -419,7 +419,7 @@ async def trigger_post(request: Request, user: dict = Depends(require_user)):
 
     logger.info(f"Build trigger request from user {user['username']}")
 
-    if not started or config.is_paused():
+    if not started:
         raise HTTPException(status_code=503)
 
     content_type = request.headers.get("Content-Type", "")

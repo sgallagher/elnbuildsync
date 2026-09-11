@@ -26,11 +26,6 @@ logger = logging.getLogger(__name__)
 
 
 async def periodic_cleanup():
-    # Do nothing if we're paused
-    if config.is_paused():
-        logger.debug("Skipping periodic cleanup during pause.")
-        return
-
     logger.debug("Starting periodic cleanup.")
 
     # We have the set of desired packages from Content Resolver

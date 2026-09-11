@@ -44,6 +44,11 @@ class ComponentNotFoundError(Exception):
 async def process_message_batch():
     global running
     try:
+        # If we are paused, just restart the lull timer
+        if config.is_paused():
+            logger.info("Paused; skipping batch processing")
+            return
+
         # Get all the unprocessed build triggers from the database
         build_triggers = await BuildTrigger.get_unprocessed_build_triggers()
 

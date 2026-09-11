@@ -142,6 +142,7 @@ async def build_harness(
     task_timeout: float | None = None,
     emailer: Any = None,
     rawhide_releases_body: str | None = None,
+    pause: bool = False,
 ) -> Harness:
     """Load config + wire up the fakes for a single test scenario.
 
@@ -178,6 +179,10 @@ async def build_harness(
         rawhide_releases_body: Canned JSON body for Bodhi's
             `/releases?state=pending` endpoint, used only when
             `trigger_tag == "rawhide"`.
+        pause: `control.pause`. Defaults to `False`; set `True` to start the
+            harness already paused (`config.is_paused()` reads this via
+            `config.control["pause"]` unless overridden at runtime by
+            `config.pause_processing()`/`clear_pause_override()`).
     """
     bodhi_config: dict[str, Any] = {
         "batch_size": bodhi_batch_size,
@@ -210,7 +215,7 @@ async def build_harness(
         }
     }
 
-    dynamic_control: dict[str, Any] = {"trigger_tag": trigger_tag, "pause": False}
+    dynamic_control: dict[str, Any] = {"trigger_tag": trigger_tag, "pause": pause}
     if skip_tag:
         dynamic_control["skip_tag"] = list(skip_tag)
     dynamic_config = {
@@ -240,6 +245,12 @@ async def build_harness(
         )
 
     await config.load_dynamic_config(dynamic_config_file=str(dynamic_path))
+
+    # Ensure a clean slate: config.pause_processing()/clear_pause_override()
+    # set a module-level override that isn't touched by config.load_*(), so
+    # a prior test calling pause_processing() (e.g. via /control/pause)
+    # without a matching unpause could otherwise leak into this one.
+    config.clear_pause_override()
 
     config.emailer = emailer
 

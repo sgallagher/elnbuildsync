@@ -138,13 +138,9 @@ async def _handle_trigger_tag(msg):
     if not config.is_eligible(msg.body["name"], is_downstream=False):
         raise Drop()
 
-    # If we are currently processing a batch or are in a "paused" state,
-    # Nack() the message so it will stay in the queue and not get lost if
-    # we crash/restart.
-    if batching.running or config.is_paused():
-        raise Nack()
-
-    logger.info(f"Triggering rebuild on trigger tag {config.control['trigger_tag']}")
+    logger.info(
+        f"Queuing rebuild of {msg.body['name']} on trigger tag {config.control['trigger_tag']}"
+    )
 
     # This is a component we care about, so add it to the next batch
     batching.message_batch_processor.reset()

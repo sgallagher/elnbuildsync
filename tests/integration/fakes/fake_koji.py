@@ -299,6 +299,22 @@ class FakeKojiClientSession:
     def get_nvrs_in_tag(self, tag: str) -> list[str]:
         return list(self._tag_contents.get(tag, []))
 
+    def register_tagged_build(self, tag: str, nvr: str) -> None:
+        """Seed `tag` as already containing `nvr`, for tests that need
+        listTagged() (e.g. via batching.rebuild_from_components()) to see a
+        pre-existing tagging relationship without going through the normal
+        tagBuild() call - which also schedules a buildsys.tag message
+        delivery that would be an unrelated side effect for these tests.
+
+        `nvr` must already be known (e.g. via set_build_info()) so
+        listTagged()/build_id lookups can resolve it.
+        """
+        if nvr not in self._nvr_info:
+            raise AssertionError(
+                f"register_tagged_build() called for untracked NVR {nvr!r}"
+            )
+        self._tag_contents.setdefault(tag, []).append(nvr)
+
     def nvr_for_scmurl(self, scmurl: str) -> str:
         """The NVR that build() will produce (or has produced) for `scmurl`.
 
@@ -482,8 +498,17 @@ class FakeKojiClientSession:
         results = []
         for nvr in nvrs:
             name, version, release = self._nvr_info[nvr]
+            # batching.rebuild_from_components() reads build_id off of these
+            # rows; real Koji's listTagged() always includes it too.
+            build_id = self._builds.get(nvr, {}).get("build_id", nvr)
             results.append(
-                {"nvr": nvr, "name": name, "version": version, "release": release}
+                {
+                    "nvr": nvr,
+                    "name": name,
+                    "version": version,
+                    "release": release,
+                    "build_id": build_id,
+                }
             )
         return results
 

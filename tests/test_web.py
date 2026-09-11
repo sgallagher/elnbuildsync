@@ -438,7 +438,9 @@ async def test_trigger_post_paused(client, monkeypatch):
             content=b"[]",
             headers={"Content-Type": "application/json"},
         )
-    assert r.status_code == 503
+
+    # We expect the POST to succeed, but the rebuilds will be queued up for later.
+    assert r.status_code == 200
 
 
 # =============================================================================
