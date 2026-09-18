@@ -925,3 +925,85 @@ async def test_full_rebuild_flow_submission_500_exhausts_retries(
 
     trigger = await _get_trigger("pkg-o2")
     assert trigger.completed_at is not None
+
+
+# ---------------------------------------------------------------------------
+# R - koji.instance / body.instance message filtering
+# ---------------------------------------------------------------------------
+
+
+async def _no_trigger_rows(component: str) -> bool:
+    """True when no build_trigger DB row exists for `component`."""
+    async with db_models.async_session() as session:
+        result = await session.execute(
+            select(db_models.DBBuildTrigger).where(
+                db_models.DBBuildTrigger.component == component
+            )
+        )
+        return len(result.scalars().all()) == 0
+
+
+async def test_instance_missing_from_message_is_dropped(make_harness):
+    """Scenario R1: body.instance absent → _check_instance raises Drop, no
+    build_trigger row is written and no build is attempted."""
+    harness = await make_harness(packages=["pkg-r1"], koji_instance="test-koji")
+    pkg = harness.add_package("pkg-r1", build_id=8001, outcomes=[])
+
+    await harness.bus.publish(
+        "buildsys.tag",
+        {
+            "tag": "f44",
+            "name": pkg.name,
+            "version": pkg.version,
+            "release": pkg.release,
+            "build_id": pkg.build_id,
+        },
+    )
+
+    assert harness.koji.build_calls == []
+    assert await _no_trigger_rows("pkg-r1")
+
+
+async def test_instance_matching_configured_is_processed(make_harness):
+    """Scenario R2: body.instance matches koji.instance → message passes
+    _check_instance and the full rebuild pipeline runs to completion."""
+    harness = await make_harness(
+        packages=["pkg-r2"],
+        skip_tag=["^pkg-r2$"],
+        koji_instance="test-koji",
+    )
+    pkg = harness.add_package("pkg-r2", build_id=8101, outcomes=["CLOSED"])
+
+    # harness.trigger() uses the bus's configured instance ("test-koji")
+    await harness.trigger("f44", pkg)
+    await batching.process_message_batch()
+
+    assert len(_build_calls_for(harness, pkg.scmurl)) == 1
+    assert len(harness.bodhi.save_calls) == 1
+    built_nvr = harness.koji.nvr_for_scmurl(pkg.scmurl)
+    assert built_nvr in _stable_tag_nvrs(harness)
+
+    trigger = await _get_trigger("pkg-r2")
+    assert trigger.completed_at is not None
+
+
+async def test_instance_mismatch_is_dropped(make_harness):
+    """Scenario R3: body.instance present but ≠ koji.instance → _check_instance
+    raises Drop, no build_trigger row is written and no build is attempted."""
+    harness = await make_harness(packages=["pkg-r3"], koji_instance="test-koji")
+    pkg = harness.add_package("pkg-r3", build_id=8201, outcomes=[])
+
+    await harness.bus.publish(
+        "buildsys.tag",
+        {
+            "tag": "f44",
+            "name": pkg.name,
+            "version": pkg.version,
+            "release": pkg.release,
+            "build_id": pkg.build_id,
+            "instance": "wrong-instance",
+        },
+    )
+
+    assert harness.koji.build_calls == []
+    assert await _no_trigger_rows("pkg-r3")

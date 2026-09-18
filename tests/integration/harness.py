@@ -139,6 +139,7 @@ async def build_harness(
     bodhi_batch_size: int = 0,
     bodhi_max_single_batch_size: int | None = None,
     bodhi_warn_timeout: float | None = None,
+    koji_instance: str = "primary",
     tag_timeout: float | None = None,
     task_timeout: float | None = None,
     emailer: Any = None,
@@ -202,6 +203,7 @@ async def build_harness(
                 "stable_tag": STABLE_TAG,
                 "scratch_build": scratch_build,
                 "fail_fast": fail_fast,
+                "instance": koji_instance,
             },
             "bodhi": bodhi_config,
             "db": {
@@ -266,7 +268,7 @@ async def build_harness(
         )
 
     loop = asyncio.get_running_loop()
-    bus = FakeMessageBus()
+    bus = FakeMessageBus(instance=koji_instance)
 
     fake_koji = FakeKojiClientSession(loop, bus)
     fake_koji.set_build_target(BUILD_TARGET, BUILD_TAG_NAME, DEST_TAG_NAME)

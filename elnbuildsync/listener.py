@@ -50,6 +50,24 @@ def _reinsert_active_task(task_id, future):
     state.active_tasks[task_id] = future
 
 
+def _check_instance(msg):
+    """
+    Koji messages include a 'body.instance' field, which differentiates
+    between multiple Koji instances communicating on the same AMQP message
+    bus. We need to ensure that we are only listening to messages from the
+    Koji instance we are configured for.
+
+    returns: None
+
+    raises: fedora_messaging.exceptions.Drop if this is not the configured
+    instance. This will be caught by message_handler()
+    """
+
+    instance = msg.body.get("instance", None)
+    if not instance or instance != config.main["koji"]["instance"]:
+        raise Drop()
+
+
 def _handle_repo_init(msg):
     """Handle buildsys.repo.init messages for repositories we are waiting on."""
     tag = msg.body["tag"]
@@ -170,15 +188,19 @@ async def message_handler(msg):
     logger.debug(f"Received {msg.topic}: UUID {msg.id}")
     try:
         if msg.topic.endswith("buildsys.repo.init"):
+            _check_instance(msg)
             _handle_repo_init(msg)
 
         elif msg.topic.endswith("buildsys.repo.done"):
+            _check_instance(msg)
             _handle_repo_done(msg)
 
         elif msg.topic.endswith("buildsys.task.state.change"):
+            _check_instance(msg)
             _handle_task_state_change(msg)
 
         elif msg.topic.endswith("buildsys.tag"):
+            _check_instance(msg)
             await _handle_tag(msg)
 
         else:

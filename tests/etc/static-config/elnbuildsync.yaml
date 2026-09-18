@@ -1,6 +1,7 @@
 configuration:
   koji:
     profile: koji
+    instance: primary
     build_target: eln
     stable_tag: eln
     scratch_build: true

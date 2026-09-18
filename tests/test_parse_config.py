@@ -169,6 +169,23 @@ class TestParseKoji:
         with pytest.raises(ConfigError, match="koji.build_target missing"):
             _parse_koji({"profile": "koji", "stable_tag": "eln"})
 
+    def test_instance_defaults_to_primary(self):
+        result = _parse_koji(
+            {"profile": "koji", "build_target": "eln", "stable_tag": "eln"}
+        )
+        assert result["instance"] == "primary"
+
+    def test_instance_custom_value(self):
+        result = _parse_koji(
+            {
+                "profile": "koji",
+                "build_target": "eln",
+                "stable_tag": "eln",
+                "instance": "secondary",
+            }
+        )
+        assert result["instance"] == "secondary"
+
 
 class TestParseBodhi:
     def test_default_batch_size_zero(self):

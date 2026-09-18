@@ -68,10 +68,17 @@ class FakeMessageBus:
     (``FakeKojiClientSession``, ``FakeBodhiClient``) flows through
     :meth:`publish`, so ``self.published`` is a complete, ordered record of
     every notification "seen" during a test - handy for debugging failures.
+
+    ``instance`` sets the ``body.instance`` value stamped into every message
+    produced by :meth:`publish_tag` and :meth:`publish_task_state_change`.
+    It must match the ``koji.instance`` config option for messages to pass
+    ``listener._check_instance``; the default ``"primary"`` matches the
+    default config value.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, instance: str = "primary") -> None:
         self.published: list[FakeMessage] = []
+        self._instance = instance
 
     async def publish(self, topic: str, body: dict[str, Any]) -> FakeMessage:
         msg = FakeMessage(topic, body)
@@ -102,12 +109,16 @@ class FakeMessageBus:
         ``msg.body["build_id"]``); it is not required for the "awaited tag"
         path (side-tags, the stable tag), which only look at
         name/version/release.
+
+        ``body.instance`` is always set to ``self._instance`` so that
+        ``listener._check_instance`` passes for correctly-configured tests.
         """
         body: dict[str, Any] = {
             "tag": tag,
             "name": name,
             "version": version,
             "release": release,
+            "instance": self._instance,
         }
         if build_id is not None:
             body["build_id"] = build_id
@@ -126,5 +137,6 @@ class FakeMessageBus:
             "old": old_state,
             "new": new_state,
             "info": {"request": request},
+            "instance": self._instance,
         }
         return await self.publish("buildsys.task.state.change", body)
