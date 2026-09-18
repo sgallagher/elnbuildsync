@@ -138,6 +138,7 @@ async def build_harness(
     scratch_build: bool = False,
     bodhi_batch_size: int = 0,
     bodhi_max_single_batch_size: int | None = None,
+    bodhi_warn_timeout: float | None = None,
     tag_timeout: float | None = None,
     task_timeout: float | None = None,
     emailer: Any = None,
@@ -190,6 +191,8 @@ async def build_harness(
     }
     if bodhi_max_single_batch_size is not None:
         bodhi_config["max_single_batch_size"] = bodhi_max_single_batch_size
+    if bodhi_warn_timeout is not None:
+        bodhi_config["warn_timeout"] = bodhi_warn_timeout
 
     static_config = {
         "configuration": {

@@ -152,7 +152,7 @@ def _parse_koji(cnf_koji, ConfigError):
 
 def _parse_bodhi(cnf_bodhi, koji_profile, ConfigError):
     """Parse bodhi configuration. Returns dict with batch_size,
-    max_single_batch_size, and staging."""
+    max_single_batch_size, staging, and warn_timeout."""
     result = {"batch_size": 0}
     if "batch_size" in cnf_bodhi:
         try:
@@ -207,11 +207,24 @@ def _parse_bodhi(cnf_bodhi, koji_profile, ConfigError):
                 "staging Koji requires staging Bodhi (staging: true)."
             )
 
+    if "warn_timeout" in cnf_bodhi:
+        try:
+            parsed = float(cnf_bodhi["warn_timeout"])
+            if parsed < 0:
+                raise ConfigError("bodhi.warn_timeout must be a non-negative number")
+            result["warn_timeout"] = None if parsed == 0 else parsed
+        except (ValueError, TypeError):
+            raise ConfigError("bodhi.warn_timeout must be a non-negative number")
+    else:
+        result["warn_timeout"] = 3 * 60  # 3 hours in minutes
+
     logger.debug(
-        "Parsed bodhi config: batch_size=%s max_single_batch_size=%s staging=%s",
+        "Parsed bodhi config: batch_size=%s max_single_batch_size=%s "
+        "staging=%s warn_timeout=%s",
         result["batch_size"],
         result["max_single_batch_size"],
         result["staging"],
+        result["warn_timeout"],
     )
     return result
 

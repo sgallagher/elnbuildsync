@@ -254,6 +254,34 @@ class TestParseBodhi:
         result = _parse_bodhi({"staging": False}, koji_profile="koji")
         assert result["staging"] is False
 
+    def test_warn_timeout_absent_defaults_to_three_hours(self):
+        result = _parse_bodhi({}, koji_profile="koji")
+        assert result["warn_timeout"] == 3 * 60
+
+    def test_warn_timeout_integer_stored_as_float(self):
+        result = _parse_bodhi({"warn_timeout": 30}, koji_profile="koji")
+        assert result["warn_timeout"] == 30.0
+
+    def test_warn_timeout_float_accepted(self):
+        result = _parse_bodhi({"warn_timeout": 1.5}, koji_profile="koji")
+        assert result["warn_timeout"] == 1.5
+
+    def test_warn_timeout_zero_means_disabled(self):
+        result = _parse_bodhi({"warn_timeout": 0}, koji_profile="koji")
+        assert result["warn_timeout"] is None
+
+    def test_warn_timeout_negative_raises(self):
+        with pytest.raises(
+            ConfigError, match="bodhi.warn_timeout must be a non-negative number"
+        ):
+            _parse_bodhi({"warn_timeout": -5}, koji_profile="koji")
+
+    def test_warn_timeout_non_numeric_raises(self):
+        with pytest.raises(
+            ConfigError, match="bodhi.warn_timeout must be a non-negative number"
+        ):
+            _parse_bodhi({"warn_timeout": "soon"}, koji_profile="koji")
+
 
 # Minimal valid db config (all keys mandatory)
 MINIMAL_DB = {
